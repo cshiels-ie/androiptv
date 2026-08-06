@@ -34,8 +34,5 @@
       "icons/icon.ico",
       "icons/icon.png"
     ]
-  },
-  "android": {
-    "minSdkVersion": 24
   }
 }
