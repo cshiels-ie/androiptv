@@ -301,6 +301,8 @@ impl Db {
             .replace('_', "\\_");
         let pattern = format!("%{}%", escaped);
         let conn = self.conn.lock().unwrap();
+        // Bind the collect result to a local so the MappedRows temporary
+        // drops before `stmt` (otherwise the borrow outlives the statement).
         let rows = match playlist_id {
             Some(pid) => {
                 let mut stmt = conn.prepare(
@@ -308,8 +310,10 @@ impl Db {
                      FROM channels WHERE playlist_id = ?1 AND name LIKE ?2 ESCAPE '\\'
                      ORDER BY name LIMIT ?3",
                 )?;
-                stmt.query_map(params![pid, pattern, limit], |r| row_to_channel(r))?
-                    .collect::<Result<Vec<_>, _>>()?
+                let rows = stmt
+                    .query_map(params![pid, pattern, limit], |r| row_to_channel(r))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
             }
             None => {
                 let mut stmt = conn.prepare(
@@ -317,8 +321,10 @@ impl Db {
                      FROM channels WHERE name LIKE ?1 ESCAPE '\\'
                      ORDER BY name LIMIT ?2",
                 )?;
-                stmt.query_map(params![pattern, limit], |r| row_to_channel(r))?
-                    .collect::<Result<Vec<_>, _>>()?
+                let rows = stmt
+                    .query_map(params![pattern, limit], |r| row_to_channel(r))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
             }
         };
         Ok(rows)

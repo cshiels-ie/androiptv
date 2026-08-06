@@ -44,6 +44,10 @@ pub async fn handle_hls(
     if response.error_for_status_ref().is_err() {
         return bad_gateway();
     }
+    // Clone the final URL up front: consuming the body below (`bytes()` /
+    // `chunk()`) moves the response, so `response.url()` is not available
+    // afterwards.
+    let final_url = response.url().clone();
 
     // A playlist is identified by its content type, its final URL, or the
     // body marker `#EXTM3U`.
@@ -61,7 +65,7 @@ pub async fn handle_hls(
             Ok(b) => b,
             Err(_) => return bad_gateway(),
         };
-        return serve_playlist(&body, response.url(), id);
+        return serve_playlist(&body, &final_url, id);
     }
 
     // Headers don't identify a playlist, but some servers label playlists
@@ -72,7 +76,7 @@ pub async fn handle_hls(
             while let Ok(Some(chunk)) = response.chunk().await {
                 body.extend_from_slice(&chunk);
             }
-            serve_playlist(&body, response.url(), id)
+            serve_playlist(&body, &final_url, id)
         }
         _ => {
             // Segment, key or image: stream it through the shared proxy

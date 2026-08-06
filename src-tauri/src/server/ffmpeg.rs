@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -42,8 +42,9 @@ pub struct Session {
 /// Registry of ffmpeg sessions, one per channel id.
 pub struct SessionStore {
     inner: Mutex<HashMap<u64, Session>>,
-    /// Last 20 stderr lines per session (diagnostics).
-    errors: Mutex<HashMap<u64, VecDeque<String>>>,
+    /// Last 20 stderr lines per session (diagnostics). Shared (Arc) because
+    /// the stderr drainer runs on its own spawned task.
+    errors: Arc<Mutex<HashMap<u64, VecDeque<String>>>>,
     /// Set when spawn failed, so manifest requests get a good message.
     spawn_errors: Mutex<HashMap<u64, String>>,
 }
@@ -52,7 +53,7 @@ impl SessionStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
-            errors: Mutex::new(HashMap::new()),
+            errors: Arc::new(Mutex::new(HashMap::new())),
             spawn_errors: Mutex::new(HashMap::new()),
         }
     }

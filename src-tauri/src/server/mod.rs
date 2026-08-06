@@ -294,7 +294,7 @@ pub async fn proxy_stream(
         header::CONTENT_RANGE,
         header::ACCEPT_RANGES,
     ] {
-        if let Some(value) = response.headers().get(name) {
+        if let Some(value) = response.headers().get(&name) {
             headers.insert(name, value.clone());
         }
     }
