@@ -40,8 +40,12 @@ for (let i = 0; i < pkgs.length; i += 2) {
   }
   const bin = pkg.bin;
   if (!bin) continue;
-  const entries = typeof bin === "string" ? { [name]: bin } : bin;
+  // A string `bin` names the executable after the package; for scoped
+  // packages npm uses the basename (e.g. `@babel/parser` → `parser`).
+  // Slashes in a bin name would point outside .bin, so strip the scope.
+  const entries = typeof bin === "string" ? { [name.slice(name.lastIndexOf("/") + 1)]: bin } : bin;
   for (const [binName, target] of Object.entries(entries)) {
+    if (binName.includes("/")) continue;
     if (!existsSync(join(mods, name, target))) continue;
     const relTarget = join("..", name, target).split("\\").join("/");
     const shim = join(binDir, binName);
