@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-tv
+src-tauri/target
+src-tauri/gen/schemas
+# ffmpeg binaries are fetched by scripts/fetch-ffmpeg.mjs (or built once for Android)
+src-tauri/binaries/*
+!src-tauri/binaries/README.md
+*.local
+.DS_Store
