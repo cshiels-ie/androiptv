@@ -324,11 +324,17 @@ pub async fn handle_manifest(
             )
                 .into_response()
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error": "starting"})),
-        )
-            .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // The session is still starting: refresh the access time so the
+            // ticker never kills a slow-starting session mid-boot, and let
+            // the player keep polling.
+            st.sessions.touch(id);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "starting"})),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

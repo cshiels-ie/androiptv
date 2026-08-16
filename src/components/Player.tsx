@@ -24,7 +24,15 @@ export default function Player({
     if (native && !Hls.isSupported()) {
       video.src = src;
     } else if (Hls.isSupported()) {
-      const hls = new Hls({ liveDurationInfinity: true });
+      // ffmpeg remux sessions need a few seconds to produce the first
+      // playlist (503 "starting"); the default 1 retry gives up too early.
+      const hls = new Hls({
+        liveDurationInfinity: true,
+        manifestLoadingMaxRetry: 30,
+        manifestLoadingRetryDelay: 1500,
+        manifestLoadingMaxRetryTimeout: 10000,
+        manifestLoadingTimeOut: 15000,
+      });
       hlsRef.current = hls;
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (data.fatal) {

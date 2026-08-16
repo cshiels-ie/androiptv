@@ -11,7 +11,16 @@ export function attachPlayer(
   let hls: Hls | null = null;
 
   if (Hls.isSupported()) {
-    hls = new Hls({ liveDurationInfinity: true, enableWorker: false });
+    // ffmpeg remux sessions return 503 "starting" for the first few
+    // seconds; default hls.js retries give up before the playlist exists.
+    hls = new Hls({
+      liveDurationInfinity: true,
+      enableWorker: false,
+      manifestLoadingMaxRetry: 30,
+      manifestLoadingRetryDelay: 1500,
+      manifestLoadingMaxRetryTimeout: 10000,
+      manifestLoadingTimeOut: 15000,
+    });
     hls.loadSource(src);
     hls.attachMedia(video);
     hls.on(Hls.Events.ERROR, (_e, data) => {
