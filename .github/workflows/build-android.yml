@@ -1,7 +1,11 @@
-# Builds the Android APK on GitHub's runners so nothing heavy ever has to
-# compile on a dev device. Produces an arm64-v8a APK artifact plus the
-# ffmpeg sidecar (built from source, minimal component set — the app only
-# remuxes TS → HLS with `-c copy`, so no encoders/decoders are needed).
+# Builds the Android APK(s)/AAB(s) on GitHub's runners so nothing heavy ever
+# has to compile on a dev device. The ffmpeg sidecar is built from source
+# (minimal component set — the app only remuxes TS → HLS with `-c copy`, so
+# no encoders/decoders are needed).
+#
+# Manual runs (Actions → "Build Android APK" → Run workflow) can pick the
+# ABI(s) and package type; pushes and tags build the arm64-v8a APK (the
+# standard target).
 #
 # Note on http vs https: the minimal ffmpeg build omits a TLS backend, so
 # raw-TS channels over https fall back to the in-app error path; HLS
@@ -14,6 +18,24 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      abi:
+        description: "Android ABI(s) to build"
+        type: choice
+        options:
+          - aarch64
+          - armv7
+          - x86_64
+          - all
+        default: aarch64
+      package:
+        description: "Package type to produce"
+        type: choice
+        options:
+          - apk
+          - aab
+          - both
+        default: apk
 
 env:
   ANDROID_NDK_VERSION: 26.3.11579264
@@ -22,7 +44,7 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Node 20
         uses: actions/setup-node@v5
@@ -39,7 +61,9 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          # All four ABIs up front: `tauri android build --target` uses the
+          # short names, cargo needs the full triples.
+          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -59,45 +83,62 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build ffmpeg for Android (aarch64, minimal static)
+      - name: Build ffmpeg for Android (minimal static, per ABI)
         run: |
           set -euxo pipefail
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          # Resolve the requested ABIs (empty on push → aarch64).
+          ABIS="${{ inputs.abi }}"
+          [ -z "${ABIS}" ] && ABIS="aarch64"
+          [ "${ABIS}" = "all" ] && ABIS="aarch64 armv7 i686 x86_64"
+
           git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
           cd ffmpeg-src
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          ./configure \
-            --prefix="$GITHUB_WORKSPACE/ffmpeg-out" \
-            --target-os=android \
-            --arch=aarch64 \
-            --cpu=armv8-a \
-            --enable-cross-compile \
-            --cc="$NDK_BIN/aarch64-linux-android26-clang" \
-            --ar="$NDK_BIN/llvm-ar" \
-            --nm="$NDK_BIN/llvm-nm" \
-            --ranlib="$NDK_BIN/llvm-ranlib" \
-            --strip="$NDK_BIN/llvm-strip" \
-            --disable-everything \
-            --enable-ffmpeg \
-            --disable-ffprobe \
-            --disable-ffplay \
-            --enable-avcodec \
-            --enable-avformat \
-            --enable-avutil \
-            --enable-demuxer=mpegts \
-            --enable-muxer=hls \
-            --enable-muxer=mpegts \
-            --enable-parser=aac,h264,hevc,mpeg4video,mpegvideo,mpegaudio \
-            --enable-protocol=file,http,tcp \
-            --enable-bsfs \
-            --enable-pthreads \
-            --enable-small \
-            --disable-doc \
-            --disable-debug
-          make -j"$(nproc)"
-          make install
-          cp "$GITHUB_WORKSPACE/ffmpeg-out/bin/ffmpeg" \
-             "$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-linux-android"
+          for abi in ${ABIS}; do
+            case "${abi}" in
+              aarch64) ARCH=aarch64; CPU=armv8-a;      CC=aarch64-linux-android26-clang ;;
+              armv7)   ARCH=armv7;   CPU=armv7-a;      CC=armv7a-linux-androideabi26-clang ;;
+              i686)    ARCH=x86;     CPU=i686;         CC=i686-linux-android26-clang ;;
+              x86_64)  ARCH=x86_64;  CPU=x86_64;       CC=x86_64-linux-android26-clang ;;
+              *)       echo "unknown ABI: ${abi}"; exit 1 ;;
+            esac
+            # One source tree, several configures: distclean resets between ABIs.
+            make distclean >/dev/null 2>&1 || true
+            ./configure \
+              --prefix="$GITHUB_WORKSPACE/ffmpeg-out-${abi}" \
+              --target-os=android \
+              --arch="${ARCH}" \
+              --cpu="${CPU}" \
+              --enable-cross-compile \
+              --cc="$NDK_BIN/${CC}" \
+              --ar="$NDK_BIN/llvm-ar" \
+              --nm="$NDK_BIN/llvm-nm" \
+              --ranlib="$NDK_BIN/llvm-ranlib" \
+              --strip="$NDK_BIN/llvm-strip" \
+              --disable-everything \
+              --enable-ffmpeg \
+              --disable-ffprobe \
+              --disable-ffplay \
+              --enable-avcodec \
+              --enable-avformat \
+              --enable-avutil \
+              --enable-demuxer=mpegts \
+              --enable-muxer=hls \
+              --enable-muxer=mpegts \
+              --enable-parser=aac,h264,hevc,mpeg4video,mpegvideo,mpegaudio \
+              --enable-protocol=file,http,tcp \
+              --enable-bsfs \
+              --enable-pthreads \
+              --enable-small \
+              --disable-doc \
+              --disable-debug
+            make -j"$(nproc)"
+            make install
+            cp "$GITHUB_WORKSPACE/ffmpeg-out-${abi}/bin/ffmpeg" \
+               "$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-${abi}-linux-android"
+          done
 
       - name: Initialize Android project
         run: npm run tauri android init
@@ -129,12 +170,28 @@ jobs:
           open(p, "w").write(s)
           EOF
 
-      - name: Build APK (arm64-v8a)
-        run: npm run tauri android build -- --apk --target aarch64
+      - name: Build Android packages
+        run: |
+          set -euxo pipefail
+          ABIS="${{ inputs.abi }}"
+          [ -z "${ABIS}" ] && ABIS="aarch64"
+          [ "${ABIS}" = "all" ] && ABIS="aarch64 armv7 i686 x86_64"
+          PACKAGE="${{ inputs.package }}"
+          case "${PACKAGE}" in
+            aab)  FLAGS="--aab" ;;
+            both) FLAGS="--apk --aab" ;;
+            *)    FLAGS="--apk" ;;
+          esac
+          for abi in ${ABIS}; do
+            # One package per ABI: smaller, sideloadable artifacts.
+            npm run tauri android build -- ${FLAGS} --target "${abi}" --split-per-abi
+          done
 
-      - name: Upload APK artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: androiptv-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: androiptv-android
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
           if-no-files-found: error

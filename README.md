@@ -81,7 +81,7 @@ npm run tauri dev    # desktop dev app
 A [GitHub Actions workflow](.github/workflows/build-android.yml) builds the arm64-v8a APK in the
 cloud — nothing heavy ever compiles on your device:
 
-- **Trigger:** push to `main`, a `v*` tag, or manually (Actions → "Build Android APK" → Run workflow).
+- **Trigger:** push to `main`, a `v*` tag, or manually (Actions → "Build Android APK" → Run workflow — you can pick the ABI(s) and APK vs AAB).
 - **What it does:** `npm ci` → builds the TV bundle → compiles a minimal static Android ffmpeg
   (TS→HLS remux uses only `-c copy`, so no codecs are needed) → `tauri android init` → patches
   `AndroidManifest.xml` (INTERNET + cleartext HTTP) → `tauri android build --apk --target aarch64`.
@@ -90,6 +90,20 @@ cloud — nothing heavy ever compiles on your device:
   HLS channels are unaffected.
 
 Local Android builds still work (below) if you prefer to run Gradle yourself.
+
+## CI: Desktop bundles
+
+`.github/workflows/build-desktop.yml` builds the desktop installers on GitHub's
+runners (push to `main`, `v*` tags, or manual run):
+
+- **Linux** (ubuntu-22.04) → `.deb` / `.rpm` / `.AppImage`
+- **Windows** → `.msi` / `.exe` (NSIS)
+- **macOS** → `.dmg` / `.app`
+
+Each job runs `npm ci`, downloads the platform's ffmpeg sidecar
+(`node scripts/fetch-ffmpeg.mjs`), then `npm run tauri build`; bundles are
+attached to the run's summary as artifacts. Manual runs can pick the
+platform(s) and bundle type(s) (e.g. `deb,appimage`).
 
 ## Android
 

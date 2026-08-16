@@ -151,7 +151,7 @@ impl SessionStore {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let child = match command.spawn() {
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
@@ -233,7 +233,7 @@ fn ffmpeg_bin() -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let mut candidate = parent.join("ffmpeg");
+            let candidate = parent.join("ffmpeg");
             #[cfg(windows)]
             {
                 candidate.set_extension("exe");

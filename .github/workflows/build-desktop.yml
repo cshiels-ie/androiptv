@@ -1,0 +1,116 @@
+# Builds desktop bundles on GitHub's runners:
+#   Linux   → .deb / .rpm / .AppImage
+#   Windows → .msi / .exe (NSIS)
+#   macOS   → .dmg / .app
+#
+# Manual runs (Actions → "Build Desktop" → Run workflow) can pick the
+# platform(s) and bundle type(s); pushes and tags build everything.
+#
+# The ffmpeg sidecar is downloaded per platform by scripts/fetch-ffmpeg.mjs
+# (externalBin in tauri.conf.json requires it at build time). The TV bundle
+# is rebuilt by beforeBuildCommand (`npm run build`) during `tauri build`.
+
+name: Build Desktop
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform(s) to build"
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - macos
+        default: all
+      bundles:
+        description: "Bundle type(s), comma-separated (deb,rpm,appimage,msi,nsis,dmg,app); empty = all"
+        type: string
+        default: ""
+
+jobs:
+  choose-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.choose.outputs.matrix }}
+    steps:
+      - id: choose
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          case "${PLATFORM}" in
+            linux)   MATRIX='["ubuntu-22.04"]' ;;
+            windows) MATRIX='["windows-latest"]' ;;
+            macos)   MATRIX='["macos-latest"]' ;;
+            *)       MATRIX='["ubuntu-22.04", "windows-latest", "macos-latest"]' ;;
+          esac
+          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: choose-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.choose-matrix.outputs.matrix) }}
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Fetch ffmpeg sidecar
+        run: node scripts/fetch-ffmpeg.mjs
+
+      - name: Build release bundle
+        env:
+          BUNDLES: ${{ inputs.bundles }}
+        run: |
+          if [ -n "${BUNDLES}" ]; then
+            npm run tauri build -- --bundles "${BUNDLES}"
+          else
+            npm run tauri build
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: androiptv-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.AppImage
+          if-no-files-found: warn
