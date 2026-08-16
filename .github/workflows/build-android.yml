@@ -36,6 +36,13 @@ on:
           - aab
           - both
         default: apk
+      build_type:
+        description: "debug = signed with the debug key, sideloads directly (default). release = unsigned, for store signing."
+        type: choice
+        options:
+          - debug
+          - release
+        default: debug
 
 env:
   ANDROID_NDK_VERSION: 26.3.11579264
@@ -181,6 +188,11 @@ jobs:
             aab)  FLAGS="--aab" ;;
             both) FLAGS="--apk --aab" ;;
             *)    FLAGS="--apk" ;;
+          esac
+          # debug (default) is signed with the debug keystore and sideloads
+          # directly; release APKs are unsigned (needs a real keystore).
+          case "${{ inputs.build_type }}" in
+            debug) FLAGS="${FLAGS} --debug" ;;
           esac
           for abi in ${ABIS}; do
             # One package per ABI: smaller, sideloadable artifacts.

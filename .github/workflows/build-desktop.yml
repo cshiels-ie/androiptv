@@ -92,6 +92,7 @@ jobs:
         run: node scripts/fetch-ffmpeg.mjs
 
       - name: Build release bundle
+        shell: bash
         env:
           BUNDLES: ${{ inputs.bundles }}
         run: |

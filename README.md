@@ -81,7 +81,8 @@ npm run tauri dev    # desktop dev app
 A [GitHub Actions workflow](.github/workflows/build-android.yml) builds the arm64-v8a APK in the
 cloud — nothing heavy ever compiles on your device:
 
-- **Trigger:** push to `main`, a `v*` tag, or manually (Actions → "Build Android APK" → Run workflow — you can pick the ABI(s) and APK vs AAB).
+- **Trigger:** push to `main`, a `v*` tag, or manually (Actions → "Build Android APK" → Run workflow — you can pick the ABI(s), APK vs AAB, and debug vs release).
+- **Signing:** builds default to `--debug`, so the APK is signed with the debug keystore and sideloads directly. Release APKs are unsigned — configure a real keystore before distributing.
 - **What it does:** `npm ci` → builds the TV bundle → compiles a minimal static Android ffmpeg
   (TS→HLS remux uses only `-c copy`, so no codecs are needed) → `tauri android init` → patches
   `AndroidManifest.xml` (INTERNET + cleartext HTTP) → `tauri android build --apk --target aarch64`.
