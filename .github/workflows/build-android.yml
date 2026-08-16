@@ -191,7 +191,10 @@ jobs:
           esac
           # debug (default) is signed with the debug keystore and sideloads
           # directly; release APKs are unsigned (needs a real keystore).
-          case "${{ inputs.build_type }}" in
+          # Inputs are empty on push triggers — default to debug.
+          BUILD_TYPE="${{ inputs.build_type }}"
+          [ -z "${BUILD_TYPE}" ] && BUILD_TYPE="debug"
+          case "${BUILD_TYPE}" in
             debug) FLAGS="${FLAGS} --debug" ;;
           esac
           for abi in ${ABIS}; do
