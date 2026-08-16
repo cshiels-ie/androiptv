@@ -19,7 +19,7 @@ for (const name of readdirSync(mods)) {
     if (!existsSync(join(scopeDir, "package.json"))) {
       for (const sub of readdirSync(scopeDir)) {
         const pkgJson = join(scopeDir, sub, "package.json");
-        if (existsSync(pkgJson)) pkgs.push(join(name, sub), pkgJson);
+        if (existsSync(pkgJson)) pkgs.push(`${name}/${sub}`, pkgJson);
       }
       continue;
     }
