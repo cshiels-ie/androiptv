@@ -233,7 +233,10 @@ fn ffmpeg_bin() -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let candidate = parent.join("ffmpeg");
+            // `mut` is only used on Windows (set_extension); silence the
+            // unused_mut warning on other platforms.
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut candidate = parent.join("ffmpeg");
             #[cfg(windows)]
             {
                 candidate.set_extension("exe");
