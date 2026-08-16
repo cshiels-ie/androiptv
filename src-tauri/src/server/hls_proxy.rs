@@ -22,6 +22,12 @@ use super::ServerState;
 #[derive(Deserialize)]
 pub struct HlsQuery {
     pub u: String,
+    /// `probe=1` (set only on the initial channel request, never on
+    /// recursed segment/playlist fetches): if the upstream is NOT an HLS
+    /// playlist, redirect to the ffmpeg remuxer instead of streaming the
+    /// binary through. Xtream panels often serve HLS even at `.ts` URLs,
+    /// so probing lets them skip the ffmpeg session entirely.
+    pub probe: Option<String>,
 }
 
 pub async fn handle_hls(
@@ -79,6 +85,18 @@ pub async fn handle_hls(
             serve_playlist(&body, &final_url, id)
         }
         _ => {
+            // The upstream is not HLS (binary TS, image, ...).
+            if q.probe.as_deref() == Some("1") {
+                // The caller wanted to know whether this URL serves HLS;
+                // it doesn't — fall back to the ffmpeg remuxer. The player
+                // follows the same-origin redirect transparently.
+                return (
+                    StatusCode::FOUND,
+                    [(header::LOCATION, format!("/stream/ts/{id}/index.m3u8"))],
+                    (),
+                )
+                    .into_response();
+            }
             // Segment, key or image: stream it through the shared proxy
             // helper, which issues a fresh request and honors Range (the
             // response above is already partially consumed).

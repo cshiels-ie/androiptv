@@ -2,7 +2,9 @@
 //! two stream backends:
 //!
 //! - `/proxy/hls/{id}` — smart HLS passthrough proxy that rewrites remote
-//!   playlists so they play same-origin (see [`hls_proxy`]).
+//!   playlists so they play same-origin (see [`hls_proxy`]). With `probe=1`
+//!   (used for non-`.m3u8` URLs) it also sniffs for HLS: playlists are
+//!   served directly, anything else 302s to the ffmpeg remuxer.
 //! - `/stream/ts/{id}` — ffmpeg-backed remux of raw MPEG-TS (or any
 //!   non-HLS) channel URLs into live HLS (see [`ffmpeg`]).
 //!
@@ -256,7 +258,12 @@ async fn play(Path(id): Path<u64>, State(st): State<ServerState>) -> impl IntoRe
             url::form_urlencoded::byte_serialize(channel.url.as_bytes()).collect();
         format!("/proxy/hls/{id}?u={escaped}")
     } else {
-        format!("/stream/ts/{id}/index.m3u8")
+        // Probe non-HLS URLs through the proxy first: Xtream panels often
+        // serve HLS even at `.ts` URLs. If it turns out to be real TS, the
+        // proxy redirects here to the ffmpeg remuxer instead.
+        let escaped: String =
+            url::form_urlencoded::byte_serialize(channel.url.as_bytes()).collect();
+        format!("/proxy/hls/{id}?u={escaped}&probe=1")
     };
     Json(json!({ "kind": if is_hls { "hls" } else { "ts" }, "url": url })).into_response()
 }
