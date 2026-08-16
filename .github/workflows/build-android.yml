@@ -131,6 +131,7 @@ jobs:
               --enable-avcodec \
               --enable-avformat \
               --enable-avutil \
+              --enable-encoder=aac \
               --enable-demuxer=mpegts \
               --enable-muxer=hls \
               --enable-muxer=mpegts \

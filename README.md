@@ -17,7 +17,8 @@ channels and stream them **without casting** — no Chromecast, no DLNA, no extr
 - **HLS passthrough proxy** — channel HLS streams are proxied through the embedded server with
   URL rewriting, so the TV browser never sees origin/CORS problems.
 - **Raw-TS → HLS remux** — raw `.ts` channels are remuxed into HLS on the fly with the bundled
-  ffmpeg using `-c copy` (zero re-encode, near-zero CPU).
+  ffmpeg: video is copied untouched, audio is re-encoded to AAC (no browser MSE decodes the
+  AC3/EAC3 audio common in IPTV streams) — near-zero CPU.
 
 ## Architecture
 
@@ -84,8 +85,8 @@ cloud — nothing heavy ever compiles on your device:
 - **Trigger:** push to `main`, a `v*` tag, or manually (Actions → "Build Android APK" → Run workflow — you can pick the ABI(s), APK vs AAB, and debug vs release).
 - **Signing:** builds default to `--debug`, so the APK is signed with the debug keystore and sideloads directly. Release APKs are unsigned — configure a real keystore before distributing.
 - **What it does:** `npm ci` → builds the TV bundle → compiles a minimal static Android ffmpeg
-  (TS→HLS remux uses only `-c copy`, so no codecs are needed) → `tauri android init` → patches
-  `AndroidManifest.xml` (INTERNET + cleartext HTTP) → `tauri android build --apk --target aarch64`.
+  (TS→HLS remux: video `-c copy`, plus the native AAC encoder for audio) → `tauri android init`
+  → patches `AndroidManifest.xml` (INTERNET + cleartext HTTP) → `tauri android build --apk --target aarch64`.
 - **Artifact:** the APK is attached to the run's summary ("Artifacts" dropdown).
 - **Note:** the CI ffmpeg build omits a TLS backend, so raw-TS channels over `https` won't remux;
   HLS channels are unaffected.

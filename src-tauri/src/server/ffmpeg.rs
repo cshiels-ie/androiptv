@@ -2,8 +2,10 @@
 //!
 //! Channels whose URL is not HLS (raw MPEG-TS, for example) can't be
 //! played by a plain browser. For those, a per-session ffmpeg subprocess
-//! remuxes the stream (`-c copy`) into a small live HLS package in a temp
-//! dir, which the server then serves (`/stream/ts/{id}/index.m3u8` and
+//! remuxes the stream into a small live HLS package in a temp dir: video
+//! is copied untouched (`-c:v copy`), audio is re-encoded to AAC because
+//! no browser MSE decodes AC3/EAC3, which IPTV TS streams commonly use.
+//! The server then serves the result (`/stream/ts/{id}/index.m3u8` and
 //! `/stream/ts/{id}/seg/{name}`). Idle sessions are killed by the ticker
 //! spawned in `super::spawn_server_ticker`.
 
@@ -132,8 +134,16 @@ impl SessionStore {
                 "AndroIPTV/0.1.0",
                 "-i",
                 url,
-                "-c",
+                // Video stays zero-encode; audio is re-encoded to AAC because
+                // no browser MSE decodes AC3/EAC3 (common in IPTV TS streams).
+                "-c:v",
                 "copy",
+                "-c:a",
+                "aac",
+                "-ac",
+                "2",
+                "-b:a",
+                "128k",
                 "-f",
                 "hls",
                 "-hls_time",
