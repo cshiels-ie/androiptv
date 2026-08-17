@@ -283,7 +283,71 @@ pub async fn get_channel(
     run_db(Arc::clone(&state.db), move |db| db.get_channel(id)).await
 }
 
+/// Reads the saved server prefs (host override, port) and builds the
+/// advertised ServerInfo from them.
+async fn load_server_info(db: Arc<Db>) -> Result<ServerInfo, String> {
+    let (ip_override, port_pref) = run_db(db, |d| {
+        let ip_override = d.get_setting("server_ip_override")?;
+        let port_pref = d.get_setting("server_port")?;
+        Ok((ip_override, port_pref))
+    })
+    .await?;
+    let ip_override = ip_override.as_deref().filter(|s| !s.is_empty());
+    let port_pref = port_pref.and_then(|v| v.parse::<u16>().ok());
+    server_info(ip_override, port_pref)
+}
+
 #[tauri::command]
-pub fn get_server_info() -> Result<ServerInfo, String> {
-    server_info()
+pub async fn get_server_info(state: tauri::State<'_, AppData>) -> Result<ServerInfo, String> {
+    load_server_info(Arc::clone(&state.db)).await
+}
+
+/// Stores the LAN server host/port preferences and returns the updated
+/// server info. The host override applies immediately (every advertised
+/// URL, QR code and status chip); the port is applied on the next app
+/// start because the listener binds once at startup. Pass None (or an
+/// empty/“auto” host) to clear a preference and go back to automatic.
+#[tauri::command]
+pub async fn set_server_prefs(
+    state: tauri::State<'_, AppData>,
+    ip_override: Option<String>,
+    port: Option<u16>,
+) -> Result<ServerInfo, String> {
+    // Sanitize the host: allow a scheme accidentally pasted from an
+    // address bar, but nothing else — it must end up as a bare host/IP
+    // (no slashes, ports or whitespace).
+    let ip_override = match ip_override {
+        Some(ip) => {
+            let mut cleaned = ip.trim().to_string();
+            for prefix in ["http://", "https://"] {
+                if let Some(stripped) = cleaned.strip_prefix(prefix) {
+                    cleaned = stripped.to_string();
+                }
+            }
+            if cleaned.is_empty() || cleaned.len() > 253 || cleaned.chars().any(|c| {
+                c.is_whitespace() || c == '/' || c == ':'
+            }) {
+                return Err(format!("invalid host: {ip:?}"));
+            }
+            let cleared = matches!(cleaned.as_str(), "" | "auto");
+            (!cleared).then_some(cleaned)
+        }
+        None => None,
+    };
+
+    let db = Arc::clone(&state.db);
+    run_db(db, move |d| {
+        match &ip_override {
+            Some(ip) => d.set_setting("server_ip_override", ip)?,
+            None => d.set_setting("server_ip_override", "")?,
+        }
+        match port {
+            Some(p) => d.set_setting("server_port", &p.to_string())?,
+            None => d.set_setting("server_port", "")?,
+        }
+        Ok(())
+    })
+    .await?;
+
+    load_server_info(Arc::clone(&state.db)).await
 }

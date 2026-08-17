@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ChannelList from "../components/ChannelList";
 import SearchBar from "../components/SearchBar";
 import SeriesView from "../components/SeriesView";
+import { HamburgerIcon } from "../components/icons";
 import { api } from "../services/api";
 import type { Channel, Episode, Group, Playlist } from "../services/types";
 
@@ -10,9 +11,11 @@ type Kind = "live" | "vod" | "series";
 export default function Channels({
   onPlayChannel,
   onPlayEpisode,
+  serverUrl,
 }: {
   onPlayChannel: (ch: Channel) => void;
   onPlayEpisode: (series: Channel, ep: Episode) => void;
+  serverUrl: string | null;
 }) {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [playlistId, setPlaylistId] = useState<number | null>(null);
@@ -88,6 +91,7 @@ export default function Channels({
             series={series}
             onBack={() => setSeries(null)}
             onPlayEpisode={onPlayEpisode}
+            serverUrl={serverUrl}
           />
         </div>
       </main>
@@ -139,7 +143,7 @@ export default function Channels({
               aria-label="Show sidebar"
               onClick={() => setSidebarOpen(true)}
             >
-              ☰
+              <HamburgerIcon />
             </button>
           )}
           <select
@@ -186,6 +190,7 @@ export default function Channels({
           channels={channels}
           onPlay={kind === "series" ? (ch) => setSeries(ch) : onPlayChannel}
           emptyLabel={emptyLabel}
+          serverUrl={serverUrl}
         />
       </div>
     </main>

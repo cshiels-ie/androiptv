@@ -3,6 +3,7 @@ import Home from "./pages/Home";
 import Channels from "./pages/Channels";
 import TvCast from "./pages/TvCast";
 import PlayerView from "./pages/PlayerView";
+import { TvIcon } from "./components/icons";
 import { api } from "./services/api";
 import type { Channel, Episode, ServerInfo } from "./services/types";
 
@@ -49,7 +50,10 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>📺 AndroIPTV</h1>
+        <h1 className="brand">
+          <TvIcon />
+          AndroIPTV
+        </h1>
         <nav className="tabs">
           <button className={tab === "home" ? "tab active" : "tab"} onClick={() => setTab("home")}>
             Playlists
@@ -70,9 +74,15 @@ export default function App() {
 
       {tab === "home" && <Home onPlaylistImported={refreshServerInfo} />}
       {tab === "channels" && (
-        <Channels onPlayChannel={playChannel} onPlayEpisode={playEpisode} />
+        <Channels
+          onPlayChannel={playChannel}
+          onPlayEpisode={playEpisode}
+          serverUrl={serverInfo?.url ?? null}
+        />
       )}
-      {tab === "cast" && <TvCast serverInfo={serverInfo} channel={activeChannel} />}
+      {tab === "cast" && (
+        <TvCast serverInfo={serverInfo} channel={activeChannel} onServerInfo={setServerInfo} />
+      )}
 
       {player && (
         <PlayerView

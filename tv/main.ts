@@ -48,6 +48,27 @@ function focusIndex(i: number) {
   items[selectedId].scrollIntoView({ block: "nearest" });
 }
 
+// One card builder for renderChannels and loadChannels. Channels without
+// a logo (or whose logo fetch fails) get the <img> hidden entirely — a
+// hidden-but-laid-out image leaves a gaping hole, and a broken one shows
+// the browser's broken-image glyph.
+function buildCard(ch: Channel): HTMLButtonElement {
+  const card = el("button", "card");
+  const img = el("img");
+  if (ch.logo_url) {
+    img.src = `/api/logo?u=${encodeURIComponent(ch.logo_url)}`;
+    img.onerror = () => { img.style.display = "none"; };
+  } else {
+    img.style.display = "none";
+  }
+  const text = el("span");
+  text.appendChild(el("span", "name", ch.name));
+  if (ch.tvg_chno != null) text.appendChild(el("span", "chno", `CH ${ch.tvg_chno}`));
+  card.append(img, text);
+  card.onclick = () => (location.hash = `#/play/${ch.id}`);
+  return card;
+}
+
 // ---------- routing ----------
 async function route() {
   cleanup?.();
@@ -88,23 +109,7 @@ async function renderChannels() {
   }
 
   const grid = el("div", "grid");
-  for (const ch of channels) {
-    const card = el("button", "card");
-    const img = el("img");
-    if (ch.logo_url) {
-      img.src = `/api/logo?u=${encodeURIComponent(ch.logo_url)}`;
-    } else {
-      img.style.visibility = "hidden";
-    }
-    const name = el("span", "name", ch.name);
-    card.appendChild(img);
-    const text = el("span");
-    text.appendChild(name);
-    if (ch.tvg_chno != null) text.appendChild(el("span", "chno", `CH ${ch.tvg_chno}`));
-    card.appendChild(text);
-    card.onclick = () => (location.hash = `#/play/${ch.id}`);
-    grid.appendChild(card);
-  }
+  for (const ch of channels) grid.appendChild(buildCard(ch));
 
   main.replaceChildren(gbar, grid);
   focusIndex(0);
@@ -120,19 +125,7 @@ async function loadChannels(restoreFocus: boolean) {
   }
   const grid = main.querySelector(".grid")!;
   grid.replaceChildren();
-  for (const ch of channels) {
-    const card = el("button", "card");
-    // …build cards identically to renderChannels (kept local on purpose)
-    const img = el("img");
-    if (ch.logo_url) img.src = `/api/logo?u=${encodeURIComponent(ch.logo_url)}`;
-    else img.style.visibility = "hidden";
-    const text = el("span");
-    text.appendChild(el("span", "name", ch.name));
-    if (ch.tvg_chno != null) text.appendChild(el("span", "chno", `CH ${ch.tvg_chno}`));
-    card.append(img, text);
-    card.onclick = () => (location.hash = `#/play/${ch.id}`);
-    grid.appendChild(card);
-  }
+  for (const ch of channels) grid.appendChild(buildCard(ch));
   if (restoreFocus) focusIndex(0);
 }
 

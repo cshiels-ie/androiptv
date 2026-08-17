@@ -138,6 +138,10 @@ CREATE TABLE IF NOT EXISTS series_meta (
   channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
   fetched_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_ch_playlist ON channels(playlist_id);
 CREATE INDEX IF NOT EXISTS idx_ch_group ON channels(group_id);
 CREATE INDEX IF NOT EXISTS idx_ch_name ON channels(name COLLATE NOCASE);
@@ -512,6 +516,33 @@ impl Db {
             .optional()?;
         Ok(row)
     }
+
+    // ---------- settings ----------
+
+    /// Reads a setting (e.g. the server host/port override), or None when
+    /// the key was never written.
+    pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let value = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Upserts a setting.
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
 }
 
 fn row_to_channel(r: &rusqlite::Row<'_>) -> rusqlite::Result<Channel> {
@@ -783,5 +814,20 @@ CREATE TABLE channels (
         );
         let m3u = db.create_playlist("m", "m3u", "http://m/pl.m3u", None).unwrap();
         assert!(db.playlist_xtream_creds(m3u).unwrap().is_none());
+    }
+
+    #[test]
+    fn settings_upsert_and_read() {
+        let db = Db::open_in_memory().unwrap();
+        // Unset key reads as None.
+        assert!(db.get_setting("server_port").unwrap().is_none());
+        // Insert, overwrite, delete-free read.
+        db.set_setting("server_port", "8080").unwrap();
+        assert_eq!(db.get_setting("server_port").unwrap(), Some("8080".into()));
+        db.set_setting("server_port", "9090").unwrap();
+        assert_eq!(db.get_setting("server_port").unwrap(), Some("9090".into()));
+        // Independent keys don't collide.
+        db.set_setting("server_ip_override", "192.168.1.50").unwrap();
+        assert_eq!(db.get_setting("server_port").unwrap(), Some("9090".into()));
     }
 }

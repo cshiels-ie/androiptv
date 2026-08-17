@@ -48,9 +48,12 @@ export interface Episode {
 }
 
 export interface ServerInfo {
-  url: string;
-  ips: string[];
-  port: number;
+  url: string; // advertised URL (host override applied)
+  ips: string[]; // all detected LAN IPs, physical interfaces first
+  port: number; // port the server is actually bound to
+  host: string; // advertised host: the override, or the best detected IP
+  ip_override: string | null; // configured host override (null = auto)
+  port_pref: number | null; // configured port (null = default 4040, applied on restart)
 }
 
 export interface PlayInfo {

@@ -19,10 +19,12 @@ body { background: var(--bg); color: var(--fg); }
 .app { display: flex; flex-direction: column; height: 100%; }
 
 .topbar {
-  display: flex; align-items: center; gap: 16px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
 }
-.topbar h1 { font-size: 18px; margin: 0; }
+.topbar h1 { font-size: 18px; margin: 0; flex-shrink: 0; }
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand svg { flex-shrink: 0; }
 .tabs { display: flex; gap: 4px; flex: 1; }
 .tab {
   background: transparent; color: var(--muted); border: none; cursor: pointer;
@@ -32,9 +34,14 @@ body { background: var(--bg); color: var(--fg); }
 .server-chip {
   font-family: ui-monospace, monospace; font-size: 12px; color: var(--ok);
   background: #12231a; padding: 4px 10px; border-radius: 999px; border: 1px solid #1e3a2a;
+  max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.page { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 18px; gap: 14px; }
+/* Pages scroll vertically when their content is taller than the window
+   (phone screens) instead of silently clipping; the channels page manages
+   its own panes and stays overflow-hidden. */
+.page { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 18px; gap: 14px; }
+.channels-page { overflow: hidden; }
 
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
 .panel h2 { margin: 0 0 12px; font-size: 16px; }
@@ -96,8 +103,9 @@ button.danger { background: var(--danger); }
 .ch-logo { width: 34px; height: 34px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
 .ch-logo.placeholder {
   display: flex; align-items: center; justify-content: center;
-  background: var(--panel2); font-size: 16px;
+  background: var(--panel2); color: var(--muted);
 }
+.ch-logo.placeholder svg { width: 18px; height: 18px; }
 .ch-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ch-chno { color: var(--muted); font-size: 12px; }
 
@@ -106,11 +114,16 @@ button.danger { background: var(--danger); }
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
 .player-card {
-  width: min(900px, 94vw); background: var(--panel); border: 1px solid var(--border);
+  width: 94vw; width: min(900px, 94vw); background: var(--panel); border: 1px solid var(--border);
   border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
 }
 .player-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .player-video { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; }
+/* Older Android WebViews don't know aspect-ratio; give the video a fixed
+   height there so it doesn't collapse to 0px. */
+@supports not (aspect-ratio: 1 / 1) {
+  .player-video { height: 56.25vw; max-height: 62vh; }
+}
 
 .cast-grid { display: flex; gap: 24px; flex-wrap: wrap; }
 .qr-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; }
@@ -119,11 +132,14 @@ button.danger { background: var(--danger); }
 .qr-label { font-size: 13px; color: var(--muted); max-width: 280px; text-align: center; }
 
 .ip-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
-.ip-list li { display: flex; align-items: center; gap: 10px; }
+.ip-list li { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .ip-list code {
   background: var(--panel2); border: 1px solid var(--border); padding: 8px 12px;
   border-radius: 8px; font-size: 13px;
+  /* Long http:// URLs must wrap on phone screens, not overflow the panel. */
+  min-width: 0; word-break: break-all; overflow-wrap: anywhere;
 }
+.ip-list button { flex-shrink: 0; }
 
 .muted { color: var(--muted); }
 .muted.small { font-size: 12px; }
@@ -134,7 +150,12 @@ button.danger { background: var(--danger); }
 .channels-page.sidebar-collapsed .sidebar { display: none; }
 .pane-header { display: flex; align-items: center; gap: 10px; }
 .pane-header select.pane-playlist { width: 220px; flex-shrink: 0; }
-.hamburger { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; width: 38px; height: 38px; cursor: pointer; font-size: 16px; flex-shrink: 0; }
+.hamburger {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; width: 38px; height: 38px; cursor: pointer; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.hamburger svg { width: 18px; height: 18px; }
 .pane-header .segmented { flex-shrink: 0; }
 .pane-header .search { flex: 1; max-width: none; }
 .series-view { flex: 1; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 6px; }
@@ -155,4 +176,44 @@ button.danger { background: var(--danger); }
   border: 1px solid var(--border);
   font-size: 12px;
   max-width: 150px;
+}
+
+/* Server host/port configuration form on the TV Server page. */
+.host-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin: 12px 0;
+}
+.host-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.host-form select,
+.host-form input {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+.host-form input[type="number"] { width: 90px; }
+.host-form input[type="text"] { width: 220px; }
+
+/* Phone screens: shrink the sidebar, let pane headers wrap, and give
+   list rows bigger touch targets. */
+@media (max-width: 700px) {
+  .sidebar { width: 180px; min-width: 0; }
+  .channel-pane { min-width: 0; }
+  .pane-header { flex-wrap: wrap; }
+  .pane-header select.pane-playlist { width: 100%; }
+  .channel-item { padding: 12px 10px; }
+  .player-head { flex-wrap: wrap; }
+  .cast-grid { flex-direction: column; align-items: flex-start; }
+  .topbar h1 { font-size: 16px; }
 }

@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../services/api";
+import { api, logoSrc } from "../services/api";
 import type { Channel, Episode } from "../services/types";
+import { FilmIcon } from "./icons";
 
 export default function SeriesView({
   series,
   onBack,
   onPlayEpisode,
+  serverUrl,
 }: {
   series: Channel;
   onBack: () => void;
   onPlayEpisode: (series: Channel, ep: Episode) => void;
+  serverUrl: string | null;
 }) {
   const [episodes, setEpisodes] = useState<Episode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +66,12 @@ export default function SeriesView({
           ← Back to series
         </button>
         {series.logo_url && (
-          <img className="series-poster" src={series.logo_url} alt="" />
+          <img
+            className="series-poster"
+            src={logoSrc(series.logo_url, serverUrl) ?? series.logo_url}
+            alt=""
+            onError={(e) => (e.currentTarget.style.display = "none")}
+          />
         )}
         <h2 className="series-title">{series.name}</h2>
       </div>
@@ -93,12 +101,15 @@ export default function SeriesView({
                       {ep.logo_url ? (
                         <img
                           className="ch-logo"
-                          src={ep.logo_url}
+                          src={logoSrc(ep.logo_url, serverUrl) ?? ep.logo_url}
                           alt=""
                           loading="lazy"
+                          onError={(e) => (e.currentTarget.style.display = "none")}
                         />
                       ) : (
-                        <span className="ch-logo placeholder">🎬</span>
+                        <span className="ch-logo placeholder">
+                          <FilmIcon />
+                        </span>
                       )}
                       <span className="ch-name">
                         {ep.episode_num}. {ep.title}

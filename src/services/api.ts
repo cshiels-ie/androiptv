@@ -9,6 +9,14 @@ import type {
   ServerInfo,
 } from "./types";
 
+// Logo URLs route through the LAN server's /api/logo proxy — same path the
+// TV page uses — so hotlink-protected or plain-http provider logos load in
+// the app too. Falls back to the raw URL if the server isn't up yet.
+export function logoSrc(logoUrl: string | null, serverUrl: string | null): string | null {
+  if (!logoUrl) return null;
+  return serverUrl ? `${serverUrl}/api/logo?u=${encodeURIComponent(logoUrl)}` : logoUrl;
+}
+
 export const api = {
   importM3u: (source: string, name: string) =>
     invoke<ImportStats>("import_m3u", { source, name }),
@@ -39,4 +47,8 @@ export const api = {
   getChannel: (id: number) => invoke<Channel | null>("get_channel", { id }),
 
   getServerInfo: () => invoke<ServerInfo>("get_server_info"),
+
+  // null clears the preference (automatic detection / default port).
+  setServerPrefs: (ipOverride: string | null, port: number | null) =>
+    invoke<ServerInfo>("set_server_prefs", { ipOverride, port }),
 };

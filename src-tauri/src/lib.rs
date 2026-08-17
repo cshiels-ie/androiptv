@@ -53,14 +53,21 @@ pub fn run() {
             commands::get_channel,
             commands::series_episodes,
             commands::get_server_info,
+            commands::set_server_prefs,
         ])
         .setup(|app| {
             let data_dir = app_data_dir(app)?;
             let db = Arc::new(Db::open(&data_dir.join("androiptv.db"))?);
 
+            // Browser-ish UA: provider CDNs (logos, playlists) commonly
+            // reject the bare "reqwest/x.y.z" default.
             let http = reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(60))
+                .user_agent(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                     (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                )
                 .build()
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
 
@@ -69,7 +76,14 @@ pub fn run() {
                 http: http.clone(),
             });
 
-            // Embedded LAN TV server + ffmpeg session sweeper.
+            // Embedded LAN TV server + ffmpeg session sweeper. A saved
+            // port preference (set_server_prefs) wins over the default
+            // 4040; it binds once at startup.
+            let port_pref = db
+                .get_setting("server_port")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<u16>().ok());
             let state = server::ServerState {
                 db,
                 http,
@@ -77,7 +91,7 @@ pub fn run() {
             };
             server::spawn_server_ticker(state.clone());
             tauri::async_runtime::spawn(async move {
-                server::spawn_server(state).await;
+                server::spawn_server(state, port_pref).await;
             });
 
             Ok(())

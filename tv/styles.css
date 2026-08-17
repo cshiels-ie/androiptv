@@ -19,7 +19,9 @@ body {
   user-select: none;
 }
 
-#app { display: flex; flex-direction: column; height: 100vh; }
+/* min-height (not fixed height) so the page can grow instead of clipping
+   on short screens; the footer still sticks to the bottom at 100vh. */
+#app { display: flex; flex-direction: column; min-height: 100vh; }
 
 #hdr {
   display: flex; align-items: center; justify-content: space-between;

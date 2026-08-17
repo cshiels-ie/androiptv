@@ -44,11 +44,17 @@ pub static PORT: OnceLock<u16> = OnceLock::new();
 pub const EPISODE_ID_OFFSET: u64 = 1 << 30;
 
 /// Information about the running LAN server, for the frontend status view.
+/// `host`/`ip_override`/`port_pref` are the user's configured preferences
+/// (None = automatic), so the UI can render a host/port picker that
+/// matches what the server actually advertises.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ServerInfo {
     pub url: String,
     pub ips: Vec<String>,
     pub port: u16,
+    pub host: String,
+    pub ip_override: Option<String>,
+    pub port_pref: Option<u16>,
 }
 
 /// Shared state for every HTTP handler: database, HTTP client and the
@@ -61,17 +67,36 @@ pub struct ServerState {
 }
 
 /// Current server info, or an error if the server has not started yet.
-pub fn server_info() -> Result<ServerInfo, String> {
+/// `ip_override` (user-chosen host for the advertised URL) and
+/// `port_pref` (configured port, applied at next startup) come from the
+/// settings table; `ips` stays the full detected list so the UI can offer
+/// every interface.
+pub fn server_info(
+    ip_override: Option<&str>,
+    port_pref: Option<u16>,
+) -> Result<ServerInfo, String> {
     let ips = crate::net::local_ips();
     let port = PORT
         .get()
         .copied()
         .ok_or_else(|| "server not started".to_string())?;
-    let url = ips
-        .first()
-        .map(|ip| format!("http://{ip}:{port}"))
-        .unwrap_or_default();
-    Ok(ServerInfo { url, ips, port })
+    let host = match ip_override {
+        Some(ip) if !ip.is_empty() => ip.to_string(),
+        _ => ips.first().cloned().unwrap_or_default(),
+    };
+    let url = if host.is_empty() {
+        String::new()
+    } else {
+        format!("http://{host}:{port}")
+    };
+    Ok(ServerInfo {
+        url,
+        ips,
+        port,
+        host,
+        ip_override: ip_override.map(str::to_string),
+        port_pref,
+    })
 }
 
 /// Spawns a background loop that ticks the ffmpeg session store every 30
@@ -93,14 +118,20 @@ pub fn spawn_server_ticker(state: ServerState) {
     });
 }
 
-/// Binds the TCP listener (4040, or an ephemeral port if that's taken),
-/// publishes the port in [`PORT`] and serves the router forever.
-pub async fn spawn_server(state: ServerState) {
-    let listener = match tokio::net::TcpListener::bind("0.0.0.0:4040").await {
-        Ok(listener) => listener,
-        Err(first_err) => match tokio::net::TcpListener::bind("0.0.0.0:0").await {
+/// Binds the TCP listener (a user-configured port if any, else 4040, else
+/// an ephemeral port if taken), publishes the port in [`PORT`] and serves
+/// the router forever.
+pub async fn spawn_server(state: ServerState, preferred_port: Option<u16>) {
+    // Candidate order: user preference, then the default 4040.
+    let candidates: Vec<u16> = preferred_port
+        .into_iter()
+        .chain(std::iter::once(4040))
+        .collect();
+    let listener = match bind_first(&candidates).await {
+        Some(listener) => listener,
+        None => match tokio::net::TcpListener::bind("0.0.0.0:0").await {
             Ok(listener) => {
-                eprintln!("[server] port 4040 busy ({first_err}); using an ephemeral port");
+                eprintln!("[server] all preferred ports busy; using an ephemeral port");
                 listener
             }
             Err(e) => {
@@ -115,6 +146,17 @@ pub async fn spawn_server(state: ServerState) {
     if let Err(e) = axum::serve(listener, router(state)).await {
         eprintln!("[server] server error: {e}");
     }
+}
+
+/// Tries each port in order, returning the first successful listener.
+async fn bind_first(ports: &[u16]) -> Option<tokio::net::TcpListener> {
+    for &port in ports {
+        match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+            Ok(listener) => return Some(listener),
+            Err(e) => eprintln!("[server] port {port} busy ({e}); trying next"),
+        }
+    }
+    None
 }
 
 /// Builds the axum router for the LAN server.
@@ -243,8 +285,19 @@ async fn logo(Query(q): Query<LogoQuery>, State(st): State<ServerState>) -> impl
                 .into_response()
         }
     };
-    match proxy_stream(&st.http, url.as_str(), None).await {
-        Ok(ok) => ok.into_response(),
+    // Many provider CDNs hotlink-protect logos: send the logo's own origin
+    // as Referer so they treat us as a first-party page, not a leech.
+    let referer = url.origin().ascii_serialization();
+    match proxy_stream(&st.http, url.as_str(), None, &[("referer", referer)]).await {
+        Ok((status, mut headers, body)) => {
+            // Logos are static; let WebViews reuse them across list
+            // renders instead of re-fetching through the proxy.
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("public, max-age=86400"),
+            );
+            (status, headers, body).into_response()
+        }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({"error": e})),
@@ -371,14 +424,20 @@ async fn not_found() -> impl IntoResponse {
 /// Fetches `url` (honoring an optional `Range` header) and relays the
 /// upstream status, selected headers and body stream straight to the
 /// caller — a transparent byte proxy for segments, keys and logos.
+/// `extra_headers` are sent upstream with the request (e.g. a Referer for
+/// hotlink-protected logo CDNs).
 pub async fn proxy_stream(
     client: &reqwest::Client,
     url: &str,
     range: Option<&str>,
+    extra_headers: &[(&str, String)],
 ) -> Result<(StatusCode, HeaderMap, Body), String> {
     let mut request = client.get(url);
     if let Some(range) = range {
         request = request.header(header::RANGE, range);
+    }
+    for (name, value) in extra_headers {
+        request = request.header(*name, value);
     }
     let response = request
         .send()
