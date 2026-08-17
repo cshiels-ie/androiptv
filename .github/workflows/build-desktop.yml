@@ -4,7 +4,7 @@
 #   macOS   → .dmg / .app
 #
 # Manual runs (Actions → "Build Desktop" → Run workflow) can pick the
-# platform(s) and bundle type(s); pushes and tags build everything.
+# platform(s) and bundle type(s); pull requests build everything.
 #
 # The ffmpeg sidecar is downloaded per platform by scripts/fetch-ffmpeg.mjs
 # (externalBin in tauri.conf.json requires it at build time). The TV bundle
@@ -13,9 +13,7 @@
 name: Build Desktop
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
     inputs:
       platform:

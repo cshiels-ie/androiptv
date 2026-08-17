@@ -4,7 +4,7 @@
 # no encoders/decoders are needed).
 #
 # Manual runs (Actions → "Build Android APK" → Run workflow) can pick the
-# ABI(s) and package type; pushes and tags build the arm64-v8a APK (the
+# ABI(s) and package type; pull requests build the arm64-v8a APK (the
 # standard target).
 #
 # Note on http vs https: the minimal ffmpeg build omits a TLS backend, so
@@ -14,9 +14,7 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
     inputs:
       abi:
@@ -96,7 +94,7 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-          # Resolve the requested ABIs (empty on push → aarch64).
+          # Resolve the requested ABIs (empty on pull request → aarch64).
           ABIS="${{ inputs.abi }}"
           [ -z "${ABIS}" ] && ABIS="aarch64"
           [ "${ABIS}" = "all" ] && ABIS="aarch64 armv7 i686 x86_64"
@@ -192,7 +190,7 @@ jobs:
           esac
           # debug (default) is signed with the debug keystore and sideloads
           # directly; release APKs are unsigned (needs a real keystore).
-          # Inputs are empty on push triggers — default to debug.
+          # Inputs are empty on pull request triggers — default to debug.
           BUILD_TYPE="${{ inputs.build_type }}"
           [ -z "${BUILD_TYPE}" ] && BUILD_TYPE="debug"
           case "${BUILD_TYPE}" in
