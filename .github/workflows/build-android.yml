@@ -105,6 +105,14 @@ jobs:
           # whitelist"). openssl 3.0's android-* configs locate the NDK
           # toolchain via $ANDROID_NDK_ROOT; the built libs are static.
           export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          # openssl's android targets probe $PATH for the NDK clang
+          # (Configurations/15-android.conf): with a clang-only NDK (r23+)
+          # and clang missing from $PATH, Configure falls back to probing
+          # for a $triarch-gcc wrapper that no longer exists and dies.
+          # Put the llvm prebuilt bin dir on PATH so it takes the clang
+          # branch and builds with the $triarch$api-clang wrappers (which
+          # self-target the API level and sysroot).
+          export PATH="$NDK_BIN:$PATH"
 
           for abi in ${ABIS}; do
             case "${abi}" in
