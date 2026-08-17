@@ -150,6 +150,10 @@ CREATE INDEX IF NOT EXISTS idx_ep_channel ON episodes(channel_id);
 
 const BATCH: usize = 5000;
 
+/// An empty episode cache stays valid for this long before the lazy
+/// `get_series_info` fetch runs again (see `episodes_for_channel`).
+const EMPTY_CACHE_TTL_SECS: i64 = 15 * 60;
+
 impl Db {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
@@ -459,16 +463,19 @@ impl Db {
 
     /// Episodes cached for a series channel. `None` = never fetched yet
     /// (the lazy `get_series_info` path must run); `Some(vec)` = cached
-    /// result, possibly empty (a fetched series with no episodes — the
-    /// series_meta marker row distinguishes it from never-fetched).
+    /// result. An empty cache goes stale after [`EMPTY_CACHE_TTL_SECS`]: a
+    /// panel hiccup or unparsed response shape must not become a permanent
+    /// "No episodes." — the next open re-fetches instead.
     pub fn episodes_for_channel(&self, channel_id: i64) -> rusqlite::Result<Option<Vec<Episode>>> {
         let conn = self.conn.lock().unwrap();
-        let fetched: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM series_meta WHERE channel_id = ?1)",
-            params![channel_id],
-            |r| r.get(0),
-        )?;
-        if !fetched {
+        let fetched_at: Option<i64> = conn
+            .query_row(
+                "SELECT fetched_at FROM series_meta WHERE channel_id = ?1",
+                params![channel_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if fetched_at.is_none() {
             return Ok(None);
         }
         let mut stmt = conn.prepare(
@@ -478,6 +485,18 @@ impl Db {
         let rows = stmt
             .query_map(params![channel_id], |r| row_to_episode(r))?
             .collect::<Result<Vec<_>, _>>()?;
+        if rows.is_empty() {
+            let fresh: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM series_meta
+                    WHERE channel_id = ?1 AND fetched_at > strftime('%s','now') - ?2)",
+                params![channel_id, EMPTY_CACHE_TTL_SECS],
+                |r| r.get(0),
+            )?;
+            if !fresh {
+                return Ok(None);
+            }
+        }
         Ok(Some(rows))
     }
 

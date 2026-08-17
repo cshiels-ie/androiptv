@@ -409,9 +409,10 @@ fn parse_episode(ep: &serde_json::Value, season: Option<i64>) -> Option<ParsedEp
 }
 
 /// Parses a `get_series_info` response into episodes. Handles the standard
-/// `seasons` array shape and a flat top-level `episodes` fallback; an
-/// explicit error object is surfaced as an error. Pure so it is unit
-/// testable without network access.
+/// `seasons` array shape, a flat top-level `episodes` array, and a
+/// non-standard `episodes` object keyed by season number; an explicit error
+/// object is surfaced as an error. Pure so it is unit testable without
+/// network access.
 pub fn parse_series_episodes(json: &serde_json::Value) -> Result<Vec<ParsedEpisode>, String> {
     if let Some(err) = json.get("error").and_then(|e| e.as_str()).filter(|e| !e.is_empty()) {
         return Err(format!("server error: {err}"));
@@ -440,6 +441,27 @@ pub fn parse_series_episodes(json: &serde_json::Value) -> Result<Vec<ParsedEpiso
                 out.push(p);
             }
         }
+    } else if let Some(map) = json.get("episodes").and_then(|e| e.as_object()) {
+        // Non-standard shape: `episodes` as an object keyed by season
+        // number ({"episodes": {"1": [...], "2": [...]}}).
+        for (season_key, eps) in map {
+            let season = season_key.parse::<i64>().ok();
+            if let Some(eps) = eps.as_array() {
+                for ep in eps {
+                    if let Some(p) = parse_episode(ep, season) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        // Diagnostic for panels with an unexpected shape: the caller sees
+        // "No episodes." without this, so log the raw response (truncated).
+        eprintln!(
+            "[xtream] get_series_info returned no episodes; raw: {:.200}",
+            json
+        );
     }
     Ok(out)
 }
@@ -541,5 +563,27 @@ mod tests {
 
         // Empty object → empty, not an error.
         assert!(parse_series_episodes(&json!({})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_series_episodes_object_keyed() {
+        // Non-standard shape: `episodes` object keyed by season number.
+        let map = json!({
+            "episodes": {
+                "1": [
+                    { "episode_num": 1, "title": "One", "container_extension": "mp4" },
+                    { "episode_num": 2, "title": "Two", "container_extension": "mp4" }
+                ],
+                "2": [
+                    { "episode_num": 1, "title": "Three", "container_extension": "mp4" }
+                ],
+                "garbage": []
+            }
+        });
+        let eps = parse_series_episodes(&map).unwrap();
+        assert_eq!(eps.len(), 3);
+        assert_eq!(eps[0].season, 1);
+        assert_eq!(eps[0].episode_num, 1);
+        assert_eq!(eps[2].season, 2);
     }
 }

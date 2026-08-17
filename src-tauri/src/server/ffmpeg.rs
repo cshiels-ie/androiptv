@@ -234,6 +234,13 @@ impl SessionStore {
 /// Resolves the ffmpeg binary: `ANDROIPTV_FFMPEG` env var, then the Tauri
 /// sidecar next to the main executable (where `bundle.externalBin` drops
 /// it), then plain `ffmpeg` on PATH.
+///
+/// Tauri names external binaries by target triple: `ffmpeg-<triple>` on
+/// desktop, `libffmpeg-<triple>.so` on Android (the `lib` prefix and `.so`
+/// suffix let the APK package a plain executable as a native library; the
+/// installer extracts it beside the app's own libs, which is what
+/// `current_exe()` points at). Both candidates are tried before the bare
+/// `ffmpeg` fallback.
 fn ffmpeg_bin() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("ANDROIPTV_FFMPEG") {
         let candidate = PathBuf::from(path);
@@ -243,16 +250,25 @@ fn ffmpeg_bin() -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            // `mut` is only used on Windows (set_extension); silence the
-            // unused_mut warning on other platforms.
-            #[cfg_attr(not(windows), allow(unused_mut))]
-            let mut candidate = parent.join("ffmpeg");
-            #[cfg(windows)]
-            {
-                candidate.set_extension("exe");
-            }
-            if candidate.is_file() {
-                return Some(candidate);
+            // The target triple (emitted by build.rs) matches the
+            // externalBin name for the running build, on every ABI.
+            let triple = env!("ANDROIPTV_TARGET");
+            for name in [
+                format!("ffmpeg-{triple}"),
+                format!("libffmpeg-{triple}.so"),
+                "ffmpeg".to_string(),
+            ] {
+                // `mut` is only used on Windows (set_extension); silence
+                // the unused_mut warning on other platforms.
+                #[cfg_attr(not(windows), allow(unused_mut))]
+                let mut candidate = parent.join(&name);
+                #[cfg(windows)]
+                {
+                    candidate.set_extension("exe");
+                }
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }

@@ -262,8 +262,14 @@ pub async fn series_episodes(
             logo_url: e.logo_url,
         })
         .collect();
-    let for_db = eps.clone();
-    run_db(db, move |d| d.replace_episodes(channel_id, &for_db)).await?;
+    // Never cache an empty result: a panel hiccup or unparsed response
+    // shape would otherwise turn into a permanent "No episodes." (the
+    // episodes_for_channel TTL is a second line of defense for stale
+    // caches written by older versions).
+    if !eps.is_empty() {
+        let for_db = eps.clone();
+        run_db(db, move |d| d.replace_episodes(channel_id, &for_db)).await?;
+    }
     Ok(eps)
 }
 

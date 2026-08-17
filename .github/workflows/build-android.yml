@@ -130,10 +130,11 @@ jobs:
               --enable-avformat \
               --enable-avutil \
               --enable-encoder=aac \
-              --enable-demuxer=mpegts \
+              --enable-demuxer=mpegts,matroska,mov \
               --enable-muxer=hls \
               --enable-muxer=mpegts \
-              --enable-parser=aac,h264,hevc,mpeg4video,mpegvideo,mpegaudio \
+              --enable-decoder=aac,ac3,eac3,mp3 \
+              --enable-parser=aac,h264,hevc,mpeg4video,mpegvideo,mpegaudio,ac3,eac3 \
               --enable-protocol=file,http,tcp \
               --enable-bsfs \
               --enable-pthreads \
