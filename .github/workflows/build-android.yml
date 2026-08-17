@@ -135,11 +135,27 @@ jobs:
             make install_sw >/dev/null
             cd ../ffmpeg-src
 
+            # Mirror ffmpeg configure's C-compiler sanity link (test_ld:
+            # ld $LDFLAGS -o $TMPE $TMPO $extralibs) so that if it fails we
+            # get clang's full stderr here instead of configure's terse
+            # "is unable to create an executable file."
+            echo 'int main(void){return 0;}' > "${GITHUB_WORKSPACE}/cc-sanity.c"
+            if ! "$NDK_BIN/${CC}" -L"${GITHUB_WORKSPACE}/openssl-out-${abi}/lib" \
+                  -o "${GITHUB_WORKSPACE}/cc-sanity" \
+                  "${GITHUB_WORKSPACE}/cc-sanity.c" \
+                  -lssl -lcrypto -lz -ldl -lpthread; then
+              echo "sanity link failed (see clang errors above)"
+              exit 1
+            fi
+
             # One source tree, several configures: distclean resets between ABIs.
             make distclean >/dev/null 2>&1 || true
             # ffmpeg's configure detects openssl via pkg-config (installed on
             # ubuntu-latest) — it must find the per-ABI static install above.
             export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/openssl-out-${abi}/lib/pkgconfig"
+            # configure's sanity test can die with a bare "unable to create an
+            # executable file" — dump the real compiler stderr in that case.
+            set +e
             ./configure \
               --prefix="$GITHUB_WORKSPACE/ffmpeg-out-${abi}" \
               --target-os=android \
@@ -177,6 +193,13 @@ jobs:
               --enable-small \
               --disable-doc \
               --disable-debug
+            rc=$?
+            set -e
+            if [ $rc -ne 0 ]; then
+              echo "=== configure failed (rc=$rc) — ffbuild/config.log tail ==="
+              tail -150 ffbuild/config.log 2>/dev/null || true
+              exit $rc
+            fi
             make -j"$(nproc)"
             make install
             cp "$GITHUB_WORKSPACE/ffmpeg-out-${abi}/bin/ffmpeg" \
