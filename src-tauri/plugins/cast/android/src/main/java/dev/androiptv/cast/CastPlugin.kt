@@ -19,7 +19,7 @@ import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
 import com.google.android.gms.cast.framework.media.RemoteMediaClient
-import com.google.android.gms.common.api.PendingResult
+import com.google.android.gms.common.api.ResultCallback
 
 @InvokeArg
 class LoadArgs {
@@ -162,13 +162,16 @@ class CastPlugin(private val activity: Activity) :
             .setAutoplay(true)
             .build()
         // 21.x removed the MediaChannelResultCallback overload; load()
-        // returns a PendingResult whose ResultCallback reports the outcome.
+        // returns a PendingResult whose result arrives via the top-level
+        // ResultCallback (the nested PendingResult.ResultCallback is gone).
         client.load(request).setResultCallback(
-            PendingResult.ResultCallback<RemoteMediaClient.MediaChannelResult> { result ->
-                if (result.status.isSuccess) {
-                    invoke.resolve(JSObject())
-                } else {
-                    invoke.reject("media load failed on the device: ${result.status.statusCode}")
+            object : ResultCallback<RemoteMediaClient.MediaChannelResult> {
+                override fun onResult(result: RemoteMediaClient.MediaChannelResult) {
+                    if (result.status.isSuccess) {
+                        invoke.resolve(JSObject())
+                    } else {
+                        invoke.reject("media load failed on the device: ${result.status.statusCode}")
+                    }
                 }
             },
         )
