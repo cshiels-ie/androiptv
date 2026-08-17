@@ -32,5 +32,9 @@ kotlin {
 dependencies {
     implementation(project(":tauri-android"))
     implementation("androidx.mediarouter:mediarouter:1.7.0")
-    implementation("com.google.android.gms:play-services-cast-framework:21.7.0")
+    // 21.7.0 does not exist (metadata: ...21.4.0, 21.5.0, 22.x). 21.4.0 is
+    // the newest line compiled against SDK 34 — anything newer has
+    // minCompileSdk 35+, which fails the AAR-metadata check against our
+    // compileSdk 34.
+    implementation("com.google.android.gms:play-services-cast-framework:21.4.0")
 }
