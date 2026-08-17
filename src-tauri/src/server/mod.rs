@@ -314,22 +314,35 @@ async fn play_episode(Path(id): Path<u64>, State(st): State<ServerState>) -> imp
 /// Builds the same-origin play payload for a stream. `kind` is the stored
 /// row kind ("live"/"vod") or "episode"; `id` is the proxy/ffmpeg
 /// namespace id (channel id, or episode id + EPISODE_ID_OFFSET).
+///
+/// Every payload carries all three playable URLs so the desktop player
+/// can switch backend on the fly (Auto / hls.js / native / ffmpeg / raw):
+/// `url` (default proxy path), `ts` (ffmpeg remux manifest) and `direct`
+/// (raw upstream URL for a last-resort native attempt).
 fn play_info_for(kind: &str, url: &str, id: u64) -> serde_json::Value {
     let escaped: String = url::form_urlencoded::byte_serialize(url.as_bytes()).collect();
+    let make = |kind: &str, path: String| {
+        json!({
+            "kind": kind,
+            "url": path,
+            "ts": format!("/stream/ts/{id}/index.m3u8"),
+            "direct": url,
+        })
+    };
     if url.to_lowercase().contains(".m3u8") {
-        json!({ "kind": "hls", "url": format!("/proxy/hls/{id}?u={escaped}") })
+        make("hls", format!("/proxy/hls/{id}?u={escaped}"))
     } else if kind == "vod" || kind == "episode" {
         if is_browser_native(url) {
             // Byte-proxy (no probe): native <video> with Range → seekable.
-            json!({ "kind": "file", "url": format!("/proxy/hls/{id}?u={escaped}") })
+            make("file", format!("/proxy/hls/{id}?u={escaped}"))
         } else {
             // mkv/ts/avi etc. → ffmpeg remux (limited seeking, v1).
-            json!({ "kind": "ts", "url": format!("/proxy/hls/{id}?u={escaped}&probe=1") })
+            make("ts", format!("/proxy/hls/{id}?u={escaped}&probe=1"))
         }
     } else {
         // Live: probe non-HLS URLs first — Xtream panels often serve HLS
         // even at `.ts` URLs. Real TS redirects to the ffmpeg remuxer.
-        json!({ "kind": "ts", "url": format!("/proxy/hls/{id}?u={escaped}&probe=1") })
+        make("ts", format!("/proxy/hls/{id}?u={escaped}&probe=1"))
     }
 }
 

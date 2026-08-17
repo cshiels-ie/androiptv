@@ -145,3 +145,14 @@ button.danger { background: var(--danger); }
 .season-block { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .season-title { width: 100%; text-align: left; background: var(--panel2); color: var(--fg); border: none; padding: 10px 12px; cursor: pointer; font-size: 14px; font-weight: 600; }
 .season-body { border-top: 1px solid var(--border); padding: 4px 0; }
+
+/* Playback-method switcher in the player header (Auto/hls.js/native/ffmpeg/direct). */
+.playback-switch {
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  max-width: 150px;
+}

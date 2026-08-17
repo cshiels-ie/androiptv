@@ -56,5 +56,7 @@ export interface ServerInfo {
 export interface PlayInfo {
   kind: "hls" | "ts" | "file";
   url: string; // path relative to the TV server origin
+  ts?: string; // ffmpeg remux manifest path (played via hls.js)
+  direct?: string; // raw upstream URL (native <video>, bypasses the proxy)
   error?: string;
 }
