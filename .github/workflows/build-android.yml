@@ -115,12 +115,14 @@ jobs:
               *)       echo "unknown ABI: ${abi}"; exit 1 ;;
             esac
 
-            # openssl, per ABI.
+            # openssl, per ABI. (Only install_sw is used — libs + headers —
+            # so there is no need for the no-apps/no-docs options, which
+            # the 3.0 Configure does not accept.)
             cd openssl-src
             make distclean >/dev/null 2>&1 || true
             ./Configure "${SSL_ARCH}" -D__ANDROID_API__=26 \
               --prefix="$GITHUB_WORKSPACE/openssl-out-${abi}" --libdir=lib \
-              no-shared no-tests no-apps no-docs >/dev/null
+              no-shared no-tests >/dev/null
             make -j"$(nproc)" >/dev/null
             make install_sw >/dev/null
             cd ../ffmpeg-src
