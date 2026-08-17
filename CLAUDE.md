@@ -29,6 +29,7 @@ There is no linter configured; `tsc --noEmit` (or `npm run build`, which runs ts
 - **`src/`** — React desktop UI (Vite, `vite.config.ts`). Talks to the backend exclusively through typed `invoke()` wrappers in `src/services/api.ts` (command names match the Rust `#[tauri::command]` handlers in `src-tauri/src/commands.rs` — keep them in sync).
 - **`tv/`** — vanilla TypeScript TV page (no framework, own Vite build `vite.tv.config.ts`, targets `es2017` for weak Tizen-era TV browsers). Hash router (`#/channels`, `#/play/<id>`), D-pad/arrow-key focus navigation, hls.js with native-HLS fallback. Talks to the embedded server same-origin via `tv/api.ts`.
 - **`src-tauri/src/`** — Rust backend: `db.rs` (SQLite), `m3u.rs` (streaming M3U parser), `xtream.rs` (Xtream Codes API import), `net.rs` (LAN IP detection), `commands.rs` (9 Tauri commands), `server/` (axum LAN server).
+- **`src-tauri/plugins/cast/`** — Android-only Chromecast Tauri plugin (native AndroidX Cast SDK; the web-sender JS SDK doesn't run in the Android WebView). Kotlin lives in `plugins/cast/android/src/main/java/dev/androiptv/cast/`; the UI drives it with `plugin:cast|*` invokes (`is-available|connect|load|disconnect|state`) and polls `state` every 2s. It registers nothing on desktop — the cast button in `PlayerView.tsx` hides when the probe invoke rejects. The `tauri-android` gradle project is provisioned by the CLI into the generated host project; the plugin just declares `implementation(project(":tauri-android"))`.
 
 ### The TV page pipeline (important invariant)
 

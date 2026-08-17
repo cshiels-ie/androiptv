@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Cast framework wiring: merged into the host app's manifest. The
+         default media receiver (CC1AD845) needs no developer-console
+         registration and plays HLS/MP4 via ExoPlayer. -->
+    <application>
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="dev.androiptv.cast.CastOptionsProvider" />
+    </application>
+</manifest>

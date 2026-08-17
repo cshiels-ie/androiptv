@@ -384,9 +384,35 @@ pub struct ParsedEpisode {
     pub logo_url: Option<String>,
 }
 
+/// Parses a numeric Xtream field. Panels disagree on types: the original
+/// Xtream Codes and many forks send `episode_num`/`season`/`season_number`
+/// as JSON strings ("1") or floats (1.0) instead of integers, so plain
+/// `as_i64()` silently drops every episode on those panels.
+fn num(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| {
+            v.as_f64()
+                .filter(|f| f.is_finite() && f.fract() == 0.0)
+                .map(|f| f as i64)
+        })
+        .or_else(|| {
+            v.as_str()
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|f| f.is_finite() && f.fract() == 0.0)
+                .map(|f| f as i64)
+        })
+}
+
 fn parse_episode(ep: &serde_json::Value, season: Option<i64>) -> Option<ParsedEpisode> {
-    let episode_num = ep.get("episode_num").and_then(|v| v.as_i64())?;
-    let season = season.or_else(|| ep.get("season").and_then(|v| v.as_i64()))?;
+    let episode_num = ep
+        .get("episode_num")
+        .or_else(|| ep.get("episode_number"))
+        .and_then(num)?;
+    let season = season.or_else(|| {
+        ep.get("season")
+            .or_else(|| ep.get("season_number"))
+            .and_then(num)
+    })?;
     let title = ep
         .get("title")
         .and_then(|v| v.as_str())
@@ -418,12 +444,13 @@ pub fn parse_series_episodes(json: &serde_json::Value) -> Result<Vec<ParsedEpiso
         return Err(format!("server error: {err}"));
     }
     let mut out = Vec::new();
+    // Standard shape: a `seasons` array with per-season episodes.
     if let Some(seasons) = json.get("seasons").and_then(|s| s.as_array()) {
         for season in seasons {
             let season_num = season
                 .get("season_number")
                 .or_else(|| season.get("season"))
-                .and_then(|v| v.as_i64());
+                .and_then(num);
             let Some(season_num) = season_num else {
                 continue;
             };
@@ -435,26 +462,37 @@ pub fn parse_series_episodes(json: &serde_json::Value) -> Result<Vec<ParsedEpiso
                 }
             }
         }
-    } else if let Some(eps) = json.get("episodes").and_then(|e| e.as_array()) {
-        for ep in eps {
-            if let Some(p) = parse_episode(ep, None) {
-                out.push(p);
+    }
+    // Panels also return episodes as a flat top-level `episodes` array or
+    // as an object keyed by season number. Those shapes routinely coexist
+    // with a (sometimes empty) `seasons` array, so only fall back when the
+    // seasons shape produced nothing — an `else if` here would make the
+    // fallback unreachable on exactly the panels it was written for.
+    if out.is_empty() {
+        if let Some(eps) = json.get("episodes").and_then(|e| e.as_array()) {
+            for ep in eps {
+                if let Some(p) = parse_episode(ep, None) {
+                    out.push(p);
+                }
             }
-        }
-    } else if let Some(map) = json.get("episodes").and_then(|e| e.as_object()) {
-        // Non-standard shape: `episodes` as an object keyed by season
-        // number ({"episodes": {"1": [...], "2": [...]}}).
-        for (season_key, eps) in map {
-            let season = season_key.parse::<i64>().ok();
-            if let Some(eps) = eps.as_array() {
-                for ep in eps {
-                    if let Some(p) = parse_episode(ep, season) {
-                        out.push(p);
+        } else if let Some(map) = json.get("episodes").and_then(|e| e.as_object()) {
+            // Non-standard shape: `episodes` as an object keyed by season
+            // number ({"episodes": {"1": [...], "2": [...]}}).
+            for (season_key, eps) in map {
+                let season = season_key.parse::<i64>().ok();
+                if let Some(eps) = eps.as_array() {
+                    for ep in eps {
+                        if let Some(p) = parse_episode(ep, season) {
+                            out.push(p);
+                        }
                     }
                 }
             }
         }
     }
+    // Deterministic UI order regardless of the panel's shape (the object
+    // shape's keys come back in unspecified order).
+    out.sort_by_key(|p| (p.season, p.episode_num));
     if out.is_empty() {
         // Diagnostic for panels with an unexpected shape: the caller sees
         // "No episodes." without this, so log the raw response (truncated).
@@ -567,8 +605,11 @@ mod tests {
 
     #[test]
     fn parse_series_episodes_object_keyed() {
-        // Non-standard shape: `episodes` object keyed by season number.
+        // Non-standard shape: `episodes` object keyed by season number,
+        // coexisting with an empty `seasons` array — the shape that made
+        // the old else-if chain short-circuit.
         let map = json!({
+            "seasons": [],
             "episodes": {
                 "1": [
                     { "episode_num": 1, "title": "One", "container_extension": "mp4" },
@@ -585,5 +626,29 @@ mod tests {
         assert_eq!(eps[0].season, 1);
         assert_eq!(eps[0].episode_num, 1);
         assert_eq!(eps[2].season, 2);
+    }
+
+    #[test]
+    fn parse_series_episodes_string_numbers() {
+        // Original Xtream Codes and many forks send season/episode numbers
+        // as JSON strings (or floats); as_i64-only parsing dropped them.
+        let json = json!({
+            "seasons": [
+                {
+                    "season_number": "1",
+                    "episodes": [
+                        { "episode_num": "1", "title": "S1E1", "container_extension": "mp4" },
+                        { "episode_number": 2.0, "title": "S1E2", "container_extension": "mp4" },
+                        { "episode_num": "3.0", "season": "1", "title": "S1E3", "container_extension": "mp4" }
+                    ]
+                }
+            ]
+        });
+        let eps = parse_series_episodes(&json).unwrap();
+        assert_eq!(eps.len(), 3);
+        assert_eq!(eps[0].season, 1);
+        assert_eq!(eps[0].episode_num, 1);
+        assert_eq!(eps[1].episode_num, 2); // "episode_number" alias + float
+        assert_eq!(eps[2].episode_num, 3); // numeric string "3.0"
     }
 }

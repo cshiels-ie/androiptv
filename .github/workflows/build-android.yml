@@ -1,15 +1,13 @@
 # Builds the Android APK(s)/AAB(s) on GitHub's runners so nothing heavy ever
 # has to compile on a dev device. The ffmpeg sidecar is built from source
-# (minimal component set — the app only remuxes TS → HLS with `-c copy`, so
-# no encoders/decoders are needed).
+# (minimal component set — remux only): video is copied untouched, audio is
+# decoded and re-encoded to AAC (aac/ac3/eac3/mp3 decoders), the matroska/
+# mov demuxers cover VOD files, and a bundled openssl provides https so
+# https raw-TS/VOD URLs remux instead of failing at input-open.
 #
 # Manual runs (Actions → "Build Android APK" → Run workflow) can pick the
 # ABI(s) and package type; pull requests build the arm64-v8a APK (the
 # standard target).
-#
-# Note on http vs https: the minimal ffmpeg build omits a TLS backend, so
-# raw-TS channels over https fall back to the in-app error path; HLS
-# channels are unaffected (proxied by Rust, no ffmpeg involved).
 
 name: Build Android APK
 
@@ -100,17 +98,38 @@ jobs:
           [ "${ABIS}" = "all" ] && ABIS="aarch64 armv7 i686 x86_64"
 
           git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
-          cd ffmpeg-src
+          git clone --depth 1 --branch openssl-3.0.13 https://github.com/openssl/openssl.git openssl-src
+
+          # The Android ffmpeg build needs a TLS backend or every https
+          # stream URL dies at input-open ("Protocol 'https' not on
+          # whitelist"). openssl 3.0's android-* configs locate the NDK
+          # toolchain via $ANDROID_NDK_ROOT; the built libs are static.
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+
           for abi in ${ABIS}; do
             case "${abi}" in
-              aarch64) ARCH=aarch64; CPU=armv8-a;      CC=aarch64-linux-android26-clang ;;
-              armv7)   ARCH=armv7;   CPU=armv7-a;      CC=armv7a-linux-androideabi26-clang ;;
-              i686)    ARCH=x86;     CPU=i686;         CC=i686-linux-android26-clang ;;
-              x86_64)  ARCH=x86_64;  CPU=x86_64;       CC=x86_64-linux-android26-clang ;;
+              aarch64) ARCH=aarch64; CPU=armv8-a;      CC=aarch64-linux-android26-clang;  SSL_ARCH=android-arm64 ;;
+              armv7)   ARCH=armv7;   CPU=armv7-a;      CC=armv7a-linux-androideabi26-clang; SSL_ARCH=android-arm ;;
+              i686)    ARCH=x86;     CPU=i686;         CC=i686-linux-android26-clang;    SSL_ARCH=android-x86 ;;
+              x86_64)  ARCH=x86_64;  CPU=x86_64;       CC=x86_64-linux-android26-clang;  SSL_ARCH=android-x86_64 ;;
               *)       echo "unknown ABI: ${abi}"; exit 1 ;;
             esac
+
+            # openssl, per ABI.
+            cd openssl-src
+            make distclean >/dev/null 2>&1 || true
+            ./Configure "${SSL_ARCH}" -D__ANDROID_API__=26 \
+              --prefix="$GITHUB_WORKSPACE/openssl-out-${abi}" --libdir=lib \
+              no-shared no-tests no-apps no-docs >/dev/null
+            make -j"$(nproc)" >/dev/null
+            make install_sw >/dev/null
+            cd ../ffmpeg-src
+
             # One source tree, several configures: distclean resets between ABIs.
             make distclean >/dev/null 2>&1 || true
+            # ffmpeg's configure detects openssl via pkg-config (installed on
+            # ubuntu-latest) — it must find the per-ABI static install above.
+            export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/openssl-out-${abi}/lib/pkgconfig"
             ./configure \
               --prefix="$GITHUB_WORKSPACE/ffmpeg-out-${abi}" \
               --target-os=android \
@@ -129,13 +148,20 @@ jobs:
               --enable-avcodec \
               --enable-avformat \
               --enable-avutil \
+              --enable-avfilter \
+              --enable-swresample \
+              --enable-filter=aresample \
               --enable-encoder=aac \
               --enable-demuxer=mpegts,matroska,mov \
               --enable-muxer=hls \
               --enable-muxer=mpegts \
               --enable-decoder=aac,ac3,eac3,mp3 \
               --enable-parser=aac,h264,hevc,mpeg4video,mpegvideo,mpegaudio,ac3,eac3 \
-              --enable-protocol=file,http,tcp \
+              --enable-protocol=file,http,tcp,https \
+              --enable-openssl \
+              --extra-cflags="-I$GITHUB_WORKSPACE/openssl-out-${abi}/include" \
+              --extra-ldflags="-L$GITHUB_WORKSPACE/openssl-out-${abi}/lib" \
+              --extra-libs="-lssl -lcrypto -lz -ldl -lpthread" \
               --enable-bsfs \
               --enable-pthreads \
               --enable-small \

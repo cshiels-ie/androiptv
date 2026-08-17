@@ -42,6 +42,7 @@ fn app_data_dir(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>>
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_cast::init())
         .invoke_handler(tauri::generate_handler![
             commands::import_m3u,
             commands::import_xtream,
@@ -88,6 +89,7 @@ pub fn run() {
                 db,
                 http,
                 sessions: Arc::new(server::ffmpeg::SessionStore::new()),
+                probe_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             };
             server::spawn_server_ticker(state.clone());
             tauri::async_runtime::spawn(async move {

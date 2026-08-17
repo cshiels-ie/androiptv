@@ -19,6 +19,11 @@ use serde_json::json;
 
 use super::ServerState;
 
+/// How long a negative probe decision ("this URL is not HLS") is trusted.
+/// The player re-requests the same probe URL on every playlist refresh, so
+/// this bounds the number of aborted upstream connections per channel.
+pub const PROBE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[derive(Deserialize)]
 pub struct HlsQuery {
     pub u: String,
@@ -41,6 +46,18 @@ pub async fn handle_hls(
         Ok(u) if u.scheme() == "http" || u.scheme() == "https" => u,
         _ => return bad_request(),
     };
+
+    // A previous probe already found this channel to be non-HLS: skip the
+    // upstream connection entirely (each probe aborts a real connection
+    // mid-body, and panels with per-connection limits then refuse the
+    // ffmpeg session).
+    if q.probe.as_deref() == Some("1") {
+        if let Some(at) = st.probe_cache.lock().unwrap().get(&id).copied() {
+            if at.elapsed() < PROBE_CACHE_TTL {
+                return redirect_to_remux(id);
+            }
+        }
+    }
 
     // Fetch (the client's default redirect policy follows redirects).
     let mut response = match st.http.get(q.u.as_str()).send().await {
@@ -90,12 +107,8 @@ pub async fn handle_hls(
                 // The caller wanted to know whether this URL serves HLS;
                 // it doesn't — fall back to the ffmpeg remuxer. The player
                 // follows the same-origin redirect transparently.
-                return (
-                    StatusCode::FOUND,
-                    [(header::LOCATION, format!("/stream/ts/{id}/index.m3u8"))],
-                    (),
-                )
-                    .into_response();
+                st.probe_cache.lock().unwrap().insert(id, std::time::Instant::now());
+                return redirect_to_remux(id);
             }
             // Segment, key or image: stream it through the shared proxy
             // helper, which issues a fresh request and honors Range (the
@@ -109,6 +122,16 @@ pub async fn handle_hls(
             }
         }
     }
+}
+
+/// 302 to the ffmpeg remuxer for this channel's namespace id.
+fn redirect_to_remux(id: u64) -> Response {
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, format!("/stream/ts/{id}/index.m3u8"))],
+        (),
+    )
+        .into_response()
 }
 
 fn bad_request() -> Response {

@@ -28,8 +28,8 @@ use super::ServerState;
 use crate::db::Channel;
 
 /// Maximum number of concurrent ffmpeg sessions; beyond this the least
-/// recently used session is evicted.
-const MAX_SESSIONS: usize = 4;
+/// recently used session is evicted (dead sessions first).
+const MAX_SESSIONS: usize = 6;
 
 /// Sessions idle for longer than this are killed by the ticker.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -69,10 +69,17 @@ impl SessionStore {
         }
     }
 
-    /// Ensures a live ffmpeg session exists for `id`, spawning one if
-    /// needed (and evicting the least recently used session when at
-    /// capacity). Never holds a lock across an `.await`.
-    pub async fn ensure_session(&self, id: u64, url: &str) -> Result<(), String> {
+    /// Ensures an ffmpeg session exists for `id`, spawning one if needed
+    /// (evicting a dead session first, then the least recently used one,
+    /// when at capacity). Never holds a lock across an `.await`.
+    ///
+    /// `kind` distinguishes live streams from VOD/episode files. Files are
+    /// remuxed as a complete VOD playlist (`-hls_playlist_type vod`, no
+    /// sliding window, no segment deletion) paced with `-re`; when ffmpeg
+    /// finishes at EOF the session keeps serving the finished package
+    /// instead of respawning from the start.
+    pub async fn ensure_session(&self, id: u64, url: &str, kind: &str) -> Result<(), String> {
+        let vod = kind == "vod" || kind == "episode";
         let mut displaced: Option<Session> = None;
         {
             let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
@@ -84,20 +91,57 @@ impl SessionStore {
                         return Ok(());
                     }
                     _ => {
-                        // Dead or unknown state: tear down and respawn.
+                        // Dead or unknown state.
+                        if vod && manifest_has_endlist(&existing.dir) {
+                            // A VOD file remuxed to completion: keep the
+                            // session around so the finished package keeps
+                            // being served; the ticker reaps it once the
+                            // player stops requesting it.
+                            existing.last_access = Instant::now();
+                            return Ok(());
+                        }
+                        let tail = self.stderr_tail_of(id);
                         displaced = inner.remove(&id);
+                        if vod {
+                            // Dead before the playlist completed: a real
+                            // failure (bad URL, missing decoder, panel 403,
+                            // ...). Stop respawning — a respawn would reset
+                            // the movie to 0:00 anyway — and surface why.
+                            let msg = if tail.is_empty() {
+                                "ffmpeg exited before the stream was remuxed (no error output captured)"
+                                    .to_string()
+                            } else {
+                                format!("ffmpeg exited before the stream was remuxed:\n{tail}")
+                            };
+                            self.spawn_errors.lock().unwrap().insert(id, msg.clone());
+                            return Err(msg);
+                        }
+                        if !tail.is_empty() {
+                            eprintln!("[ffmpeg] session {id} died:\n{tail}");
+                        }
                     }
                 },
                 None => {
-                    // New session: evict the oldest session if at capacity.
+                    // New session: evict when at capacity, preferring dead
+                    // children over live ones, then least recently used.
                     if inner.len() >= MAX_SESSIONS {
-                        let victim = inner
-                            .iter()
-                            .min_by_key(|(_, s)| s.last_access)
-                            .map(|(k, _)| *k);
-                        if let Some(victim) = victim {
-                            displaced = inner.remove(&victim);
-                            self.spawn_errors.lock().unwrap().remove(&victim);
+                        // `min_by_key` hands the closure a shared reference,
+                        // but `try_wait` needs `&mut` on the child: scan
+                        // manually, keeping the (alive, last_access) minimum.
+                        let mut victim: Option<(u64, bool, Instant)> = None;
+                        for (k, s) in inner.iter_mut() {
+                            let alive =
+                                s.child.try_wait().map(|w| w.is_none()).unwrap_or(true);
+                            if victim
+                                .map(|(_, a, t)| (a, t) > (alive, s.last_access))
+                                .unwrap_or(true)
+                            {
+                                victim = Some((*k, alive, s.last_access));
+                            }
+                        }
+                        if let Some((victim_id, _, _)) = victim {
+                            displaced = inner.remove(&victim_id);
+                            self.spawn_errors.lock().unwrap().remove(&victim_id);
                         }
                     }
                 }
@@ -125,6 +169,12 @@ impl SessionStore {
         };
 
         let mut command = Command::new(bin);
+        // `-re` must precede `-i`: it paces the *input* at real time, so
+        // the playlist edge tracks the movie instead of racing ahead of
+        // the player (which would make VOD effectively start midway).
+        if vod {
+            command.arg("-re");
+        }
         command
             .args([
                 "-hide_banner",
@@ -135,7 +185,7 @@ impl SessionStore {
                 "-i",
                 url,
                 // Video stays zero-encode; audio is re-encoded to AAC because
-                // no browser MSE decodes AC3/EAC3 (common in IPTV TS streams).
+                // no browser MSE decodes AC3/EAC3 (common in IPTV streams).
                 "-c:v",
                 "copy",
                 "-c:a",
@@ -146,14 +196,28 @@ impl SessionStore {
                 "128k",
                 "-f",
                 "hls",
-                "-hls_time",
-                "4",
-                "-hls_list_size",
-                "8",
-                "-hls_flags",
-                "delete_segments+independent_segments",
-                "-hls_segment_filename",
-            ])
+            ]);
+        if vod {
+            // VOD: one complete playlist (no sliding window, nothing
+            // deleted), terminated with #EXT-X-ENDLIST at EOF so hls.js
+            // treats it as a file and starts at 0:00.
+            command.args([
+                "-hls_time", "6",
+                "-hls_list_size", "0",
+                "-hls_playlist_type", "vod",
+                "-hls_flags", "independent_segments",
+            ]);
+        } else {
+            // Live: a small sliding window; segments are deleted as they
+            // fall out so a long-running session never fills the disk.
+            command.args([
+                "-hls_time", "4",
+                "-hls_list_size", "8",
+                "-hls_flags", "delete_segments+independent_segments",
+            ]);
+        }
+        command
+            .arg("-hls_segment_filename")
             .arg(dir.join("seg_%05d.ts"))
             .arg(dir.join("index.m3u8"))
             .stdin(std::process::Stdio::null())
@@ -228,6 +292,28 @@ impl SessionStore {
             }
         }
         Ok(())
+    }
+
+    /// Last captured stderr lines for a session (most recent last), for
+    /// surfacing ffmpeg failures in HTTP responses and the log.
+    pub fn stderr_tail_of(&self, id: u64) -> String {
+        let ring = match self.errors.lock() {
+            Ok(g) => g,
+            Err(_) => return String::new(),
+        };
+        match ring.get(&id) {
+            Some(queue) => queue.iter().cloned().collect::<Vec<_>>().join("\n"),
+            None => String::new(),
+        }
+    }
+}
+
+/// True if the session's playlist was completed with `#EXT-X-ENDLIST`
+/// (ffmpeg writes it at EOF for `-hls_playlist_type vod` remuxes).
+fn manifest_has_endlist(dir: &PathBuf) -> bool {
+    match std::fs::read(dir.join("index.m3u8")) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).contains("#EXT-X-ENDLIST"),
+        Err(_) => false,
     }
 }
 
@@ -314,14 +400,15 @@ fn lookup_channel(st: &ServerState, id: u64) -> Result<Channel, Response> {
     }
 }
 
-/// Resolves the upstream URL for a stream by namespace id. Episode ids
-/// (>= EPISODE_ID_OFFSET) map back to the episodes table; smaller ids are
-/// channels. This is what lets mkv episodes reach the ffmpeg remuxer
-/// without colliding with same-numbered channel sessions.
-fn lookup_stream(st: &ServerState, id: u64) -> Result<String, Response> {
+/// Resolves the upstream URL and kind for a stream by namespace id.
+/// Episode ids (>= EPISODE_ID_OFFSET) map back to the episodes table;
+/// smaller ids are channels. The kind drives the remux mode: "vod" and
+/// "episode" get the file behavior (complete playlist, `-re`, finished
+/// sessions), everything else the live sliding window.
+fn lookup_stream(st: &ServerState, id: u64) -> Result<(String, String), Response> {
     if id >= super::EPISODE_ID_OFFSET {
         match st.db.get_episode((id - super::EPISODE_ID_OFFSET) as i64) {
-            Ok(Some(ep)) => Ok(ep.url),
+            Ok(Some(ep)) => Ok((ep.url, "episode".to_string())),
             Ok(None) => Err(
                 (StatusCode::NOT_FOUND, Json(json!({"error": "episode not found"}))).into_response(),
             ),
@@ -332,7 +419,8 @@ fn lookup_stream(st: &ServerState, id: u64) -> Result<String, Response> {
                 .into_response()),
         }
     } else {
-        Ok(lookup_channel(st, id)?.url)
+        let channel = lookup_channel(st, id)?;
+        Ok((channel.url, channel.kind))
     }
 }
 
@@ -351,11 +439,11 @@ pub async fn handle_manifest(
     if let Some(msg) = spawn_error_of(&st, id) {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": msg}))).into_response();
     }
-    let url = match lookup_stream(&st, id) {
-        Ok(url) => url,
+    let (url, kind) = match lookup_stream(&st, id) {
+        Ok(pair) => pair,
         Err(resp) => return resp,
     };
-    if let Err(e) = st.sessions.ensure_session(id, &url).await {
+    if let Err(e) = st.sessions.ensure_session(id, &url, &kind).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": e}))).into_response();
     }
 
@@ -375,11 +463,16 @@ pub async fn handle_manifest(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // The session is still starting: refresh the access time so the
             // ticker never kills a slow-starting session mid-boot, and let
-            // the player keep polling.
+            // the player keep polling. The stderr tail is included because
+            // every ffmpeg failure mode (missing decoder, panel 403, bad
+            // URL) looks identical to a slow start without it.
             st.sessions.touch(id);
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "starting"})),
+                Json(json!({
+                    "error": "starting",
+                    "stderr": st.sessions.stderr_tail_of(id),
+                })),
             )
                 .into_response()
         }
@@ -415,11 +508,11 @@ pub async fn handle_segment(
     if let Some(msg) = spawn_error_of(&st, id) {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": msg}))).into_response();
     }
-    let url = match lookup_stream(&st, id) {
-        Ok(url) => url,
+    let (url, kind) = match lookup_stream(&st, id) {
+        Ok(pair) => pair,
         Err(resp) => return resp,
     };
-    if let Err(e) = st.sessions.ensure_session(id, &url).await {
+    if let Err(e) = st.sessions.ensure_session(id, &url, &kind).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": e}))).into_response();
     }
 

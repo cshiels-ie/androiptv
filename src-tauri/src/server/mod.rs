@@ -15,8 +15,9 @@
 pub mod ffmpeg;
 pub mod hls_proxy;
 
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
@@ -57,13 +58,20 @@ pub struct ServerInfo {
     pub port_pref: Option<u16>,
 }
 
-/// Shared state for every HTTP handler: database, HTTP client and the
-/// ffmpeg session store.
+/// Shared state for every HTTP handler: database, HTTP client, the ffmpeg
+/// session store and the probe-decision cache.
 #[derive(Clone)]
 pub struct ServerState {
     pub db: Arc<Db>,
     pub http: reqwest::Client,
     pub sessions: Arc<ffmpeg::SessionStore>,
+    /// Channel ids whose probe=1 request found a non-HLS (binary) stream.
+    /// The probe opens a real upstream connection and abandons it mid-body,
+    /// and the player refreshes the playlist URL every few seconds — so
+    /// without a cache, connection-limited panels see a fresh aborted
+    /// connection per refresh and refuse the ffmpeg one. Cached for
+    /// [`crate::server::hls_proxy::PROBE_CACHE_TTL`].
+    pub probe_cache: Arc<Mutex<HashMap<u64, Instant>>>,
 }
 
 /// Current server info, or an error if the server has not started yet.

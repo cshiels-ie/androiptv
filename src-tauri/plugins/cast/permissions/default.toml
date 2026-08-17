@@ -1,0 +1,9 @@
+[default]
+description = "Allows the Chromecast commands (Android only)"
+permissions = [
+  "allow-is-available",
+  "allow-connect",
+  "allow-load",
+  "allow-disconnect",
+  "allow-state",
+]

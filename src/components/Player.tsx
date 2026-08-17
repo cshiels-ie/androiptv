@@ -8,10 +8,14 @@ export default function Player({
   src,
   autoplay = true,
   kind = "hls",
+  casting = false,
 }: {
   src: string;
   autoplay?: boolean;
   kind?: "hls" | "file";
+  // True while the stream is being cast to a Chromecast: the phone's own
+  // speakers shouldn't also play.
+  casting?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -65,6 +69,10 @@ export default function Player({
       video.load();
     };
   }, [src, autoplay, kind]);
+
+  useEffect(() => {
+    if (casting) videoRef.current?.pause();
+  }, [casting]);
 
   return (
     <div className="player-wrap">

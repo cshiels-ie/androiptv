@@ -167,6 +167,17 @@ button.danger { background: var(--danger); }
 .season-title { width: 100%; text-align: left; background: var(--panel2); color: var(--fg); border: none; padding: 10px 12px; cursor: pointer; font-size: 14px; font-weight: 600; }
 .season-body { border-top: 1px solid var(--border); padding: 4px 0; }
 
+/* Chromecast button in the player header (Android only). */
+.cast-button {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px;
+  flex-shrink: 0;
+}
+.cast-button.active { color: var(--ok); border-color: var(--ok); }
+.cast-button:disabled { opacity: 0.6; cursor: default; }
+.cast-button svg { flex-shrink: 0; }
+
 /* Playback-method switcher in the player header (Auto/hls.js/native/ffmpeg/direct). */
 .playback-switch {
   padding: 5px 8px;
