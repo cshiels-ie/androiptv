@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use url::Url;
 
-use crate::db::{Channel, Db, Group, ImportStats, Playlist};
+use crate::db::{Channel, Db, Episode, Group, ImportStats, NewChannel, Playlist};
 use crate::m3u::{parse_m3u, ParsedChannel};
 use crate::server::{server_info, ServerInfo};
-use crate::xtream::{fetch_live, verify_auth, XtreamConfig};
+use crate::xtream::{fetch_live, fetch_series, fetch_series_episodes, fetch_vod, verify_auth, XtreamConfig};
 use crate::AppData;
 
 /// Run `f` on the blocking pool with a cloned `Arc<Db>` and flatten the
@@ -114,7 +114,12 @@ pub async fn import_xtream(
 
     // Validate credentials before pulling anything.
     verify_auth(&cfg, &http).await?;
+    // Live + VOD + series in one import; panels without a VOD/series
+    // section answer with an error object, which the fetchers treat as
+    // empty rather than failing the whole import.
     let channels = fetch_live(&cfg, &http).await?;
+    let vod = fetch_vod(&cfg, &http).await?;
+    let series = fetch_series(&cfg, &http).await?;
 
     let base_trimmed = cfg.base.trim_end_matches('/').to_string();
     let playlist_name = name.unwrap_or_else(|| {
@@ -132,17 +137,38 @@ pub async fn import_xtream(
     let pass = cfg.password.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let parsed: Vec<ParsedChannel> = channels
-            .into_iter()
-            .map(|c| ParsedChannel {
-                name: c.name,
-                url: c.url,
-                logo_url: c.logo_url,
-                tvg_id: None,
-                tvg_chno: None,
-                group: c.group,
-            })
-            .collect();
+        let mut items: Vec<NewChannel> =
+            Vec::with_capacity(channels.len() + vod.len() + series.len());
+        items.extend(channels.into_iter().map(|c| NewChannel {
+            name: c.name,
+            url: c.url,
+            logo_url: c.logo_url,
+            tvg_id: None,
+            tvg_chno: None,
+            kind: "live".into(),
+            remote_id: None,
+            group: c.group,
+        }));
+        items.extend(vod.into_iter().map(|i| NewChannel {
+            name: i.name,
+            url: i.url,
+            logo_url: i.logo_url,
+            tvg_id: None,
+            tvg_chno: None,
+            kind: "vod".into(),
+            remote_id: i.remote_id,
+            group: i.group,
+        }));
+        items.extend(series.into_iter().map(|i| NewChannel {
+            name: i.name,
+            url: i.url,
+            logo_url: i.logo_url,
+            tvg_id: None,
+            tvg_chno: None,
+            kind: "series".into(),
+            remote_id: i.remote_id,
+            group: i.group,
+        }));
         let playlist_id = db
             .create_playlist(
                 &playlist_name,
@@ -151,8 +177,7 @@ pub async fn import_xtream(
                 Some((&base_trimmed, &user, &pass)),
             )
             .map_err(|e| e.to_string())?;
-        db.import_channels(playlist_id, &parsed)
-            .map_err(|e| e.to_string())
+        db.import_items(playlist_id, &items).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -172,8 +197,9 @@ pub async fn delete_playlist(state: tauri::State<'_, AppData>, id: i64) -> Resul
 pub async fn list_groups(
     state: tauri::State<'_, AppData>,
     playlist_id: i64,
+    kind: Option<String>,
 ) -> Result<Vec<Group>, String> {
-    run_db(Arc::clone(&state.db), move |db| db.list_groups(playlist_id)).await
+    run_db(Arc::clone(&state.db), move |db| db.list_groups(playlist_id, kind.as_deref())).await
 }
 
 #[tauri::command]
@@ -181,11 +207,64 @@ pub async fn search_channels(
     state: tauri::State<'_, AppData>,
     query: String,
     playlist_id: Option<i64>,
+    kind: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<Channel>, String> {
     let db = Arc::clone(&state.db);
     let limit = limit.unwrap_or(500);
-    run_db(db, move |d| d.search_channels(&query, playlist_id, limit)).await
+    run_db(db, move |d| d.search_channels(&query, playlist_id, kind.as_deref(), limit)).await
+}
+
+/// Episodes for a series channel, fetched lazily from the panel on first
+/// open and cached in the DB afterwards (a failed fetch leaves the old
+/// cache untouched).
+#[tauri::command]
+pub async fn series_episodes(
+    state: tauri::State<'_, AppData>,
+    channel_id: i64,
+) -> Result<Vec<Episode>, String> {
+    let db = Arc::clone(&state.db);
+    let http = state.http.clone();
+
+    let channel = run_db(Arc::clone(&db), move |d| d.get_channel(channel_id))
+        .await?
+        .ok_or_else(|| "channel not found".to_string())?;
+    if channel.kind != "series" {
+        return Err("not a series channel".to_string());
+    }
+    if let Some(eps) = run_db(Arc::clone(&db), move |d| d.episodes_for_channel(channel_id)).await? {
+        return Ok(eps);
+    }
+    let creds = run_db(Arc::clone(&db), move |d| d.playlist_xtream_creds(channel.playlist_id))
+        .await?
+        .ok_or_else(|| "not an Xtream source".to_string())?;
+    let series_id = channel
+        .remote_id
+        .as_deref()
+        .and_then(|r| r.parse::<i64>().ok())
+        .ok_or_else(|| "series id missing".to_string())?;
+
+    let cfg = XtreamConfig {
+        base: creds.0,
+        username: creds.1,
+        password: creds.2,
+    };
+    let raw = fetch_series_episodes(&cfg, &http, series_id).await?;
+    let eps: Vec<Episode> = raw
+        .into_iter()
+        .map(|e| Episode {
+            id: 0,
+            channel_id,
+            season: e.season,
+            episode_num: e.episode_num,
+            title: e.title,
+            url: e.url,
+            logo_url: e.logo_url,
+        })
+        .collect();
+    let for_db = eps.clone();
+    run_db(db, move |d| d.replace_episodes(channel_id, &for_db)).await?;
+    Ok(eps)
 }
 
 #[tauri::command]

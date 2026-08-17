@@ -130,3 +130,18 @@ button.danger { background: var(--danger); }
 .center { text-align: center; }
 .ok { color: var(--ok); font-size: 13px; }
 .err { color: var(--danger); font-size: 13px; }
+
+.channels-page.sidebar-collapsed .sidebar { display: none; }
+.pane-header { display: flex; align-items: center; gap: 10px; }
+.pane-header select.pane-playlist { width: 220px; flex-shrink: 0; }
+.hamburger { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; width: 38px; height: 38px; cursor: pointer; font-size: 16px; flex-shrink: 0; }
+.pane-header .segmented { flex-shrink: 0; }
+.pane-header .search { flex: 1; max-width: none; }
+.series-view { flex: 1; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 6px; }
+.series-header { display: flex; align-items: center; gap: 14px; }
+.series-poster { width: 72px; height: 96px; border-radius: 8px; object-fit: cover; }
+.series-title { margin: 0; font-size: 18px; }
+.back-link { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; flex-shrink: 0; }
+.season-block { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.season-title { width: 100%; text-align: left; background: var(--panel2); color: var(--fg); border: none; padding: 10px 12px; cursor: pointer; font-size: 14px; font-weight: 600; }
+.season-body { border-top: 1px solid var(--border); padding: 4px 0; }

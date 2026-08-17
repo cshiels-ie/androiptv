@@ -51,6 +51,7 @@ pub fn run() {
             commands::search_channels,
             commands::channels_by_group,
             commands::get_channel,
+            commands::series_episodes,
             commands::get_server_info,
         ])
         .setup(|app| {

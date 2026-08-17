@@ -298,6 +298,28 @@ fn lookup_channel(st: &ServerState, id: u64) -> Result<Channel, Response> {
     }
 }
 
+/// Resolves the upstream URL for a stream by namespace id. Episode ids
+/// (>= EPISODE_ID_OFFSET) map back to the episodes table; smaller ids are
+/// channels. This is what lets mkv episodes reach the ffmpeg remuxer
+/// without colliding with same-numbered channel sessions.
+fn lookup_stream(st: &ServerState, id: u64) -> Result<String, Response> {
+    if id >= super::EPISODE_ID_OFFSET {
+        match st.db.get_episode((id - super::EPISODE_ID_OFFSET) as i64) {
+            Ok(Some(ep)) => Ok(ep.url),
+            Ok(None) => Err(
+                (StatusCode::NOT_FOUND, Json(json!({"error": "episode not found"}))).into_response(),
+            ),
+            Err(e) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()),
+        }
+    } else {
+        Ok(lookup_channel(st, id)?.url)
+    }
+}
+
 /// The stored spawn error for `id`, if any.
 fn spawn_error_of(st: &ServerState, id: u64) -> Option<String> {
     st.sessions.spawn_errors.lock().unwrap().get(&id).cloned()
@@ -313,11 +335,11 @@ pub async fn handle_manifest(
     if let Some(msg) = spawn_error_of(&st, id) {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": msg}))).into_response();
     }
-    let channel = match lookup_channel(&st, id) {
-        Ok(channel) => channel,
+    let url = match lookup_stream(&st, id) {
+        Ok(url) => url,
         Err(resp) => return resp,
     };
-    if let Err(e) = st.sessions.ensure_session(id, &channel.url).await {
+    if let Err(e) = st.sessions.ensure_session(id, &url).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": e}))).into_response();
     }
 
@@ -377,11 +399,11 @@ pub async fn handle_segment(
     if let Some(msg) = spawn_error_of(&st, id) {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": msg}))).into_response();
     }
-    let channel = match lookup_channel(&st, id) {
-        Ok(channel) => channel,
+    let url = match lookup_stream(&st, id) {
+        Ok(url) => url,
         Err(resp) => return resp,
     };
-    if let Err(e) = st.sessions.ensure_session(id, &channel.url).await {
+    if let Err(e) = st.sessions.ensure_session(id, &url).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({"error": e}))).into_response();
     }
 

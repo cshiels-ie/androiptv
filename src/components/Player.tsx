@@ -7,9 +7,11 @@ import Hls from "hls.js";
 export default function Player({
   src,
   autoplay = true,
+  kind = "hls",
 }: {
   src: string;
   autoplay?: boolean;
+  kind?: "hls" | "file";
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -20,34 +22,39 @@ export default function Player({
     if (!video) return;
     setError(null);
 
-    const native = video.canPlayType("application/vnd.apple.mpegurl");
-    if (native && !Hls.isSupported()) {
+    if (kind === "file") {
+      // Native playback for VOD/series files — no hls.js, no live retry.
       video.src = src;
-    } else if (Hls.isSupported()) {
-      // ffmpeg remux sessions need a few seconds to produce the first
-      // playlist (503 "starting"); the default 1 retry gives up too early.
-      const hls = new Hls({
-        liveDurationInfinity: true,
-        manifestLoadingMaxRetry: 30,
-        manifestLoadingRetryDelay: 1500,
-        manifestLoadingMaxRetryTimeout: 10000,
-        manifestLoadingTimeOut: 15000,
-      });
-      hlsRef.current = hls;
-      hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (data.fatal) {
-          setError("Stream error — channel may be offline.");
-          hls.destroy();
-          hlsRef.current = null;
-        }
-      });
-      hls.loadSource(src);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (autoplay) video.play().catch(() => {});
-      });
     } else {
-      video.src = src;
+      const native = video.canPlayType("application/vnd.apple.mpegurl");
+      if (native && !Hls.isSupported()) {
+        video.src = src;
+      } else if (Hls.isSupported()) {
+        // ffmpeg remux sessions need a few seconds to produce the first
+        // playlist (503 "starting"); the default 1 retry gives up too early.
+        const hls = new Hls({
+          liveDurationInfinity: true,
+          manifestLoadingMaxRetry: 30,
+          manifestLoadingRetryDelay: 1500,
+          manifestLoadingMaxRetryTimeout: 10000,
+          manifestLoadingTimeOut: 15000,
+        });
+        hlsRef.current = hls;
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (data.fatal) {
+            setError("Stream error — channel may be offline.");
+            hls.destroy();
+            hlsRef.current = null;
+          }
+        });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (autoplay) video.play().catch(() => {});
+        });
+      } else {
+        video.src = src;
+      }
     }
 
     return () => {
@@ -57,7 +64,7 @@ export default function Player({
       video.removeAttribute("src");
       video.load();
     };
-  }, [src, autoplay]);
+  }, [src, autoplay, kind]);
 
   return (
     <div className="player-wrap">
@@ -67,6 +74,9 @@ export default function Player({
         controls
         autoPlay={autoplay}
         playsInline
+        onError={() =>
+          setError("Playback error — the file may be offline or unsupported.")
+        }
       />
       {error && <p className="err">{error}</p>}
     </div>

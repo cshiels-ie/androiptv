@@ -6,10 +6,12 @@ import type { Channel, PlayInfo, ServerInfo } from "../services/types";
 // the app and TV use the same proxy/transcode path.
 export default function PlayerView({
   channel,
+  episodeId,
   serverInfo,
   onClose,
 }: {
   channel: Channel;
+  episodeId?: number;
   serverInfo: ServerInfo | null;
   onClose: () => void;
 }) {
@@ -20,7 +22,11 @@ export default function PlayerView({
     if (!serverInfo) return;
     setError(null);
     setPlayInfo(null);
-    fetch(`${serverInfo.url}/api/play/${channel.id}`)
+    const url =
+      episodeId != null
+        ? `${serverInfo.url}/api/play/episode/${episodeId}`
+        : `${serverInfo.url}/api/play/${channel.id}`;
+    fetch(url)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -30,7 +36,7 @@ export default function PlayerView({
         setPlayInfo(info);
       })
       .catch((e) => setError(String(e)));
-  }, [channel.id, serverInfo]);
+  }, [channel.id, episodeId, serverInfo]);
 
   const src = playInfo ? `${serverInfo!.url}${playInfo.url}` : null;
 
@@ -45,7 +51,13 @@ export default function PlayerView({
         </div>
         {error && <p className="err">{error}</p>}
         {!error && !src && <p className="muted">Starting stream…</p>}
-        {!error && src && <Player key={src} src={src} />}
+        {!error && playInfo && src && (
+          <Player
+            key={src}
+            src={src}
+            kind={playInfo.kind === "file" ? "file" : "hls"}
+          />
+        )}
       </div>
     </div>
   );

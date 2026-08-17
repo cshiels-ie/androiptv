@@ -35,6 +35,14 @@ use crate::db::{Channel, Db, Group};
 /// Set once, the first time the server binds, and never changed afterwards.
 pub static PORT: OnceLock<u16> = OnceLock::new();
 
+/// Episode ids live in the same `/proxy/hls/{id}` + `/stream/ts/{id}` id
+/// namespace as channel ids (ffmpeg session keys, temp dirs). Both are
+/// small sequential integers, so an episode id would collide with a
+/// channel id; shifting episode ids by this offset keeps them disjoint.
+/// The offset id is purely a namespacing token — the proxy never
+/// DB-lookups it, and `ffmpeg.rs` maps it back via `lookup_stream`.
+pub const EPISODE_ID_OFFSET: u64 = 1 << 30;
+
 /// Information about the running LAN server, for the frontend status view.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ServerInfo {
@@ -118,6 +126,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/channels", get(channels))
         .route("/api/logo", get(logo))
         .route("/api/play/{id}", get(play))
+        .route("/api/play/episode/{id}", get(play_episode))
         .route("/api/epg", get(epg))
         .route("/proxy/hls/{id}", get(hls_proxy::handle_hls))
         .route("/stream/ts/{id}/index.m3u8", get(ffmpeg::handle_manifest))
@@ -173,10 +182,18 @@ async fn status(State(st): State<ServerState>) -> Json<StatusBody> {
     })
 }
 
+/// `?kind=live|vod|series`, defaulting to `live` so the TV page (which
+/// sends no query and is live-only) never sees VOD/series groups.
+#[derive(Deserialize)]
+struct GroupsQuery {
+    kind: Option<String>,
+}
+
 async fn groups(
+    Query(q): Query<GroupsQuery>,
     State(st): State<ServerState>,
 ) -> Result<Json<Vec<Group>>, (StatusCode, Json<serde_json::Value>)> {
-    st.db.groups_all()
+    st.db.groups_all(q.kind.as_deref().unwrap_or("live"))
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))
 }
@@ -188,16 +205,20 @@ struct ChannelQuery {
     limit: Option<i64>,
 }
 
+/// The TV page is live-only: search and the no-group fallback are
+/// hard-filtered to kind 'live' so movies/series never leak in.
 async fn channels(
     Query(q): Query<ChannelQuery>,
     State(st): State<ServerState>,
 ) -> Result<Json<Vec<Channel>>, (StatusCode, Json<serde_json::Value>)> {
     let limit = q.limit.unwrap_or(500);
     let result = match &q.q {
-        Some(query) if !query.trim().is_empty() => st.db.search_channels(query, None, limit),
+        Some(query) if !query.trim().is_empty() => {
+            st.db.search_channels(query, None, Some("live"), limit)
+        }
         _ => match q.group {
             Some(group) => st.db.channels_by_group(group),
-            None => st.db.channels_all(limit),
+            None => st.db.channels_all(limit, "live"),
         },
     };
     result
@@ -232,8 +253,10 @@ async fn logo(Query(q): Query<LogoQuery>, State(st): State<ServerState>) -> impl
     }
 }
 
-/// Resolves the play URL for a channel: HLS channels go through the
-/// same-origin proxy, everything else through the ffmpeg remuxer.
+/// Resolves the play URL for a channel: HLS goes through the same-origin
+/// proxy; live non-HLS gets probed (HLS-at-.ts panels skip the remuxer,
+/// real TS redirects to ffmpeg); VOD files with browser-native extensions
+/// are byte-proxied without a probe so the native `<video>` can seek.
 async fn play(Path(id): Path<u64>, State(st): State<ServerState>) -> impl IntoResponse {
     let channel = match st.db.get_channel(id as i64) {
         Ok(Some(channel)) => channel,
@@ -252,20 +275,75 @@ async fn play(Path(id): Path<u64>, State(st): State<ServerState>) -> impl IntoRe
                 .into_response()
         }
     };
-    let is_hls = channel.url.to_lowercase().contains(".m3u8");
-    let url = if is_hls {
-        let escaped: String =
-            url::form_urlencoded::byte_serialize(channel.url.as_bytes()).collect();
-        format!("/proxy/hls/{id}?u={escaped}")
-    } else {
-        // Probe non-HLS URLs through the proxy first: Xtream panels often
-        // serve HLS even at `.ts` URLs. If it turns out to be real TS, the
-        // proxy redirects here to the ffmpeg remuxer instead.
-        let escaped: String =
-            url::form_urlencoded::byte_serialize(channel.url.as_bytes()).collect();
-        format!("/proxy/hls/{id}?u={escaped}&probe=1")
+    // Series have no single stream URL; the UI opens them to browse
+    // episodes instead.
+    if channel.kind == "series" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "series has no single stream — open it to browse episodes"})),
+        )
+            .into_response();
+    }
+    Json(play_info_for(&channel.kind, &channel.url, id)).into_response()
+}
+
+/// Play resolution for a single series episode (lazy-fetched row). The
+/// episode id is offset into its own namespace in proxy/ffmpeg paths so it
+/// can never collide with a channel id.
+async fn play_episode(Path(id): Path<u64>, State(st): State<ServerState>) -> impl IntoResponse {
+    let ep = match st.db.get_episode(id as i64) {
+        Ok(Some(ep)) => ep,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "episode not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
     };
-    Json(json!({ "kind": if is_hls { "hls" } else { "ts" }, "url": url })).into_response()
+    Json(play_info_for("episode", &ep.url, id + EPISODE_ID_OFFSET)).into_response()
+}
+
+/// Builds the same-origin play payload for a stream. `kind` is the stored
+/// row kind ("live"/"vod") or "episode"; `id` is the proxy/ffmpeg
+/// namespace id (channel id, or episode id + EPISODE_ID_OFFSET).
+fn play_info_for(kind: &str, url: &str, id: u64) -> serde_json::Value {
+    let escaped: String = url::form_urlencoded::byte_serialize(url.as_bytes()).collect();
+    if url.to_lowercase().contains(".m3u8") {
+        json!({ "kind": "hls", "url": format!("/proxy/hls/{id}?u={escaped}") })
+    } else if kind == "vod" || kind == "episode" {
+        if is_browser_native(url) {
+            // Byte-proxy (no probe): native <video> with Range → seekable.
+            json!({ "kind": "file", "url": format!("/proxy/hls/{id}?u={escaped}") })
+        } else {
+            // mkv/ts/avi etc. → ffmpeg remux (limited seeking, v1).
+            json!({ "kind": "ts", "url": format!("/proxy/hls/{id}?u={escaped}&probe=1") })
+        }
+    } else {
+        // Live: probe non-HLS URLs first — Xtream panels often serve HLS
+        // even at `.ts` URLs. Real TS redirects to the ffmpeg remuxer.
+        json!({ "kind": "ts", "url": format!("/proxy/hls/{id}?u={escaped}&probe=1") })
+    }
+}
+
+/// Extensions browsers can play natively (through the Range-aware byte
+/// proxy). Anything else needs the ffmpeg remuxer.
+fn is_browser_native(url: &str) -> bool {
+    let path = url::Url::parse(url)
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|_| url.to_string());
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    matches!(
+        ext.as_str(),
+        "mp4" | "m4v" | "webm" | "mov" | "ogv" | "ogg" | "mp3" | "aac" | "m4a"
+    )
 }
 
 /// EPG endpoint: contract stub for a later milestone.

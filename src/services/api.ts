@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Channel,
+  Episode,
   Group,
   ImportStats,
   Playlist,
@@ -19,11 +20,18 @@ export const api = {
 
   deletePlaylist: (id: number) => invoke<void>("delete_playlist", { id }),
 
-  listGroups: (playlistId: number) =>
-    invoke<Group[]>("list_groups", { playlistId }),
+  listGroups: (playlistId: number, kind: string) =>
+    invoke<Group[]>("list_groups", { playlistId, kind }),
 
-  searchChannels: (query: string, playlistId: number | null, limit = 500) =>
-    invoke<Channel[]>("search_channels", { query, playlistId, limit }),
+  searchChannels: (
+    query: string,
+    playlistId: number | null,
+    kind: string,
+    limit = 500
+  ) => invoke<Channel[]>("search_channels", { query, playlistId, kind, limit }),
+
+  seriesEpisodes: (channelId: number) =>
+    invoke<Episode[]>("series_episodes", { channelId }),
 
   channelsByGroup: (groupId: number) =>
     invoke<Channel[]>("channels_by_group", { groupId }),

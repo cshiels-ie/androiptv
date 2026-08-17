@@ -117,7 +117,8 @@ export default function PlaylistManager({ onImported }: { onImported: () => void
 
         {lastStats && (
           <p className="ok">
-            Imported {lastStats.channels} channels in {lastStats.groups} groups.
+            Imported {lastStats.channels} channels, {lastStats.vod} movies,{" "}
+            {lastStats.series} series in {lastStats.groups} groups.
           </p>
         )}
         {error && <p className="err">{error}</p>}
