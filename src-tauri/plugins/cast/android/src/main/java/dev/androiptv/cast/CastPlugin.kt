@@ -19,6 +19,7 @@ import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
 import com.google.android.gms.cast.framework.media.RemoteMediaClient
+import com.google.android.gms.common.api.PendingResult
 
 @InvokeArg
 class LoadArgs {
@@ -83,16 +84,19 @@ class CastPlugin(private val activity: Activity) :
         castContext.sessionManager.addSessionManagerListener(this, CastSession::class.java)
 
         // CALLBACK_FLAG_REQUEST_DISCOVERY starts mDNS discovery.
+        // (androidx.mediarouter's addCallback takes the selector first.)
         router = MediaRouter.getInstance(appContext)
-        router?.addCallback(routerCallback, selector, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+        router?.addCallback(selector, routerCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
     }
 
     @Command
     fun isAvailable(invoke: Invoke) {
         val ret = JSObject()
+        // RouteInfo.isSelectable() is package-private; the public way to
+        // ask "could the user pick a matching device right now" is
+        // isRouteAvailable.
         val hasRoutes = router
-            ?.getRoutes()
-            ?.any { it.isSelectable && it.matchesSelector(selector) } == true
+            ?.isRouteAvailable(selector, MediaRouter.AVAILABILITY_FLAG_IGNORE_DEFAULT_ROUTE) == true
         ret.put("available", hasRoutes)
         invoke.resolve(ret)
     }
@@ -101,7 +105,7 @@ class CastPlugin(private val activity: Activity) :
     fun connect(invoke: Invoke) {
         val target = router
             ?.getRoutes()
-            ?.firstOrNull { it.isSelectable && it.matchesSelector(selector) }
+            ?.firstOrNull { it.matchesSelector(selector) }
         if (target == null) {
             invoke.reject("no cast device found on this network")
             return
@@ -157,15 +161,17 @@ class CastPlugin(private val activity: Activity) :
             .setMediaInfo(mediaInfo)
             .setAutoplay(true)
             .build()
-        client.load(request, object : RemoteMediaClient.MediaChannelResultCallback() {
-            override fun onResult(result: RemoteMediaClient.MediaChannelResult) {
+        // 21.x removed the MediaChannelResultCallback overload; load()
+        // returns a PendingResult whose ResultCallback reports the outcome.
+        client.load(request).setResultCallback(
+            PendingResult.ResultCallback<RemoteMediaClient.MediaChannelResult> { result ->
                 if (result.status.isSuccess) {
                     invoke.resolve(JSObject())
                 } else {
                     invoke.reject("media load failed on the device: ${result.status.statusCode}")
                 }
-            }
-        })
+            },
+        )
     }
 
     @Command
@@ -198,13 +204,12 @@ class CastPlugin(private val activity: Activity) :
 
     // ---- SessionManagerListener ----
 
-    override fun onSessionStarted(session: CastSession, sessionId: String) {
-        connected = true
-        connecting = false
+    override fun onSessionStarting(session: CastSession) {
+        connecting = true
     }
 
-    override fun onSessionEnded(session: CastSession, error: Int) {
-        connected = false
+    override fun onSessionStarted(session: CastSession, sessionId: String) {
+        connected = true
         connecting = false
     }
 
@@ -213,8 +218,27 @@ class CastPlugin(private val activity: Activity) :
         connecting = false
     }
 
-    override fun onSessionResumed(session: CastSession, sessionId: String) {
+    override fun onSessionEnding(session: CastSession) {
+        connected = false
+    }
+
+    override fun onSessionEnded(session: CastSession, error: Int) {
+        connected = false
+        connecting = false
+    }
+
+    override fun onSessionResuming(session: CastSession, sessionId: String) {
+        connecting = true
+    }
+
+    override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) {
         connected = true
+        connecting = false
+    }
+
+    override fun onSessionResumeFailed(session: CastSession, error: Int) {
+        connected = false
+        connecting = false
     }
 
     override fun onSessionSuspended(session: CastSession, reason: Int) {
