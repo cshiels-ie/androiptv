@@ -139,11 +139,14 @@ jobs:
             # ld $LDFLAGS -o $TMPE $TMPO $extralibs) so that if it fails we
             # get clang's full stderr here instead of configure's terse
             # "is unable to create an executable file."
+            # Note: no -lpthread — bionic folded pthreads into libc at
+            # API 24, so the NDK r26 API-26 sysroot has no libpthread.so
+            # and the link fails ("unable to find library -lpthread").
             echo 'int main(void){return 0;}' > "${GITHUB_WORKSPACE}/cc-sanity.c"
             if ! "$NDK_BIN/${CC}" -L"${GITHUB_WORKSPACE}/openssl-out-${abi}/lib" \
                   -o "${GITHUB_WORKSPACE}/cc-sanity" \
                   "${GITHUB_WORKSPACE}/cc-sanity.c" \
-                  -lssl -lcrypto -lz -ldl -lpthread; then
+                  -lssl -lcrypto -lz -ldl; then
               echo "sanity link failed (see clang errors above)"
               exit 1
             fi
@@ -187,7 +190,7 @@ jobs:
               --enable-openssl \
               --extra-cflags="-I$GITHUB_WORKSPACE/openssl-out-${abi}/include" \
               --extra-ldflags="-L$GITHUB_WORKSPACE/openssl-out-${abi}/lib" \
-              --extra-libs="-lssl -lcrypto -lz -ldl -lpthread" \
+              --extra-libs="-lssl -lcrypto -lz -ldl" \
               --enable-bsfs \
               --enable-pthreads \
               --enable-small \
