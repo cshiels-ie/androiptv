@@ -268,9 +268,16 @@ pub async fn series_episodes(
     // caches written by older versions).
     if !eps.is_empty() {
         let for_db = eps.clone();
-        run_db(db, move |d| d.replace_episodes(channel_id, &for_db)).await?;
+        run_db(Arc::clone(&db), move |d| d.replace_episodes(channel_id, &for_db)).await?;
     }
-    Ok(eps)
+    // Hand back the DB rows, not the pre-insert stubs: the freshly cached
+    // episodes carry their real autoincrement ids, which the player
+    // addresses via /api/play/episode/{id}. Returning the stubs (all id=0)
+    // made every first-open episode 404 ("episode not found").
+    match run_db(db, move |d| d.episodes_for_channel(channel_id)).await? {
+        Some(cached) => Ok(cached),
+        None => Ok(eps),
+    }
 }
 
 #[tauri::command]

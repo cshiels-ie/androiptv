@@ -59,8 +59,17 @@ pub async fn handle_hls(
         }
     }
 
-    // Fetch (the client's default redirect policy follows redirects).
-    let mut response = match st.http.get(q.u.as_str()).send().await {
+    // Fetch (the client's default redirect policy follows redirects). The
+    // panel's own origin is sent as Referer so hotlink-protected panels
+    // treat us as a first-party media request instead of a leech.
+    let referer = parsed.origin().ascii_serialization();
+    let mut response = match st
+        .http
+        .get(q.u.as_str())
+        .header(header::REFERER, referer.clone())
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(_) => return bad_gateway(),
     };
@@ -116,7 +125,7 @@ pub async fn handle_hls(
             let range = headers
                 .get(header::RANGE)
                 .and_then(|v| v.to_str().ok());
-            match super::proxy_stream(&st.http, parsed.as_str(), range, &[]).await {
+            match super::proxy_stream(&st.http, parsed.as_str(), range, &[("referer", referer)]).await {
                 Ok(ok) => ok.into_response(),
                 Err(_) => bad_gateway(),
             }

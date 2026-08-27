@@ -8,3 +8,5 @@ src-tauri/binaries/*
 !src-tauri/binaries/README.md
 *.local
 .DS_Store
+# Local headless test harness (server + e2e suite) and its cargo caches
+.harness

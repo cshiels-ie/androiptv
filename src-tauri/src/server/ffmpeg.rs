@@ -184,6 +184,18 @@ impl SessionStore {
                 "AndroIPTV/0.1.0",
                 "-i",
                 url,
+                // Explicit stream selection: first video + first audio, both
+                // optional (audio-only radio channels must still work). With
+                // no -map, ffmpeg auto-selects *every* stream, and a subtitle
+                // track (webvtt/srt/ass — very common on IPTV panels) cannot
+                // be muxed into the HLS output: the webvtt encoder fails and
+                // ffmpeg aborts with "Nothing was written into output file",
+                // killing the whole remux session. -sn drops subtitles.
+                "-map",
+                "0:v:0?",
+                "-map",
+                "0:a:0?",
+                "-sn",
                 // Video stays zero-encode; audio is re-encoded to AAC because
                 // no browser MSE decodes AC3/EAC3 (common in IPTV streams).
                 "-c:v",

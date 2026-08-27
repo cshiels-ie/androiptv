@@ -3,18 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import Player from "../components/Player";
 import type { Channel, PlayInfo, ServerInfo } from "../services/types";
 
-// Playback backends the player can be forced to use, in order. Auto keeps
-// the server-recommended kind; the rest exist as fallbacks for panels
-// where the default path fails (no ffmpeg, blocked proxy, odd codecs).
-const PLAY_MODES = [
-  ["auto", "Auto"],
-  ["hls", "HLS (hls.js)"],
-  ["native", "Native video"],
-  ["ts", "Remux (ffmpeg)"],
-  ["direct", "Direct URL"],
-] as const;
-type PlayMode = (typeof PLAY_MODES)[number][0];
-
 // Cast state from the native Android plugin; null = plugin unavailable
 // (desktop) → hide the button.
 type CastState = {
@@ -53,8 +41,10 @@ function CastIcon() {
   );
 }
 
-// Playback overlay. Resolves /api/play on the local TV server so both
-// the app and TV use the same proxy/transcode path.
+// Playback overlay. Resolves /api/play on the local TV server and plays the
+// single recommended path — no backend picker: the server already chooses
+// the right one per content (HLS → proxy, live TS → ffmpeg remux, native
+// VOD files → direct panel URL, mkv/avi VOD → ffmpeg remux).
 export default function PlayerView({
   channel,
   episodeId,
@@ -70,12 +60,6 @@ export default function PlayerView({
   const [error, setError] = useState<string | null>(null);
   const [cast, setCast] = useState<CastState | null>(null);
   const [castError, setCastError] = useState<string | null>(null);
-  // The chosen backend persists across streams (localStorage) so a panel
-  // that only works with one method needs no re-picking.
-  const [mode, setMode] = useState<PlayMode>(() => {
-    const saved = localStorage.getItem("androiptv.playbackMode");
-    return PLAY_MODES.some(([m]) => m === saved) ? (saved as PlayMode) : "auto";
-  });
 
   useEffect(() => {
     if (!serverInfo) return;
@@ -127,8 +111,6 @@ export default function PlayerView({
       .catch(() => setCast(null));
   }, []);
 
-  // While the overlay is open, poll the native cast state (session start /
-  // end are asynchronous, and the plugin doesn't push events).
   const castSupported = cast !== null;
   useEffect(() => {
     if (!castSupported) return;
@@ -152,10 +134,11 @@ export default function PlayerView({
     try {
       await invoke("plugin:cast|connect");
       await invoke("plugin:cast|load", {
-        url: proxySrc,
+        // Files cast straight from the panel (same as playback) so a long
+        // movie isn't cut short by the proxy's request timeout.
+        url: playInfo.kind === "file" ? (playInfo.direct ?? proxySrc) : proxySrc,
         title: channel.name,
         contentType: mimeFor(proxySrc),
-        // VOD files are buffered; live channels stream on (HLS/TS).
         streamType: playInfo.kind === "file" ? "buffered" : "live",
       });
     } catch (e) {
@@ -166,25 +149,14 @@ export default function PlayerView({
 
   const proxySrc = playInfo ? `${serverInfo!.url}${playInfo.url}` : null;
 
-  // Resolve the chosen mode into concrete (kind, src). A forced mode whose
-  // URL the server didn't provide falls back to Auto.
+  // Single automatic path: native files play the panel URL directly; HLS and
+  // ffmpeg-remuxed streams play through the same-origin proxy with hls.js.
   let effective: { kind: "hls" | "file"; src: string } | null = null;
   if (playInfo && proxySrc) {
-    const auto =
+    effective =
       playInfo.kind === "file"
-        ? { kind: "file" as const, src: proxySrc }
-        : { kind: "hls" as const, src: proxySrc };
-    if (mode === "native") effective = { kind: "file", src: proxySrc };
-    else if (mode === "direct")
-      effective = playInfo.direct
-        ? { kind: "file", src: playInfo.direct }
-        : auto;
-    else if (mode === "ts")
-      effective = playInfo.ts
-        ? { kind: "hls", src: `${serverInfo!.url}${playInfo.ts}` }
-        : auto;
-    else if (mode === "hls") effective = { kind: "hls", src: proxySrc };
-    else effective = auto;
+        ? { kind: "file", src: playInfo.direct ?? proxySrc }
+        : { kind: "hls", src: proxySrc };
   }
 
   return (
@@ -210,24 +182,6 @@ export default function PlayerView({
                   ? "Connecting…"
                   : "Cast"}
             </button>
-          )}
-          {playInfo && (
-            <select
-              className="playback-switch"
-              value={mode}
-              onChange={(e) => {
-                const next = e.target.value as PlayMode;
-                setMode(next);
-                localStorage.setItem("androiptv.playbackMode", next);
-              }}
-              title="Playback method — try another if this one fails"
-            >
-              {PLAY_MODES.map(([m, label]) => (
-                <option key={m} value={m}>
-                  {label}
-                </option>
-              ))}
-            </select>
           )}
           <button className="danger" onClick={onClose}>
             Close

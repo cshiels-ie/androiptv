@@ -69,6 +69,34 @@ pub fn run() {
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                      (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
                 )
+                // Look like a real browser to anti-leech panels: some serve
+                // streams fine to a browser but reject requests that lack the
+                // Accept-Language / Sec-Fetch-* headers a browser media
+                // request carries (the panel then answers 403/5xx and the
+                // proxy surfaces it as 502, while "direct URL" in a browser
+                // works). These are harmless to panels that don't check.
+                .default_headers({
+                    use reqwest::header::{HeaderMap, HeaderValue};
+                    let mut h = HeaderMap::new();
+                    h.insert(reqwest::header::ACCEPT, HeaderValue::from_static("*/*"));
+                    h.insert(
+                        reqwest::header::ACCEPT_LANGUAGE,
+                        HeaderValue::from_static("en-US,en;q=0.9"),
+                    );
+                    h.insert(
+                        reqwest::header::HeaderName::from_static("sec-fetch-dest"),
+                        HeaderValue::from_static("video"),
+                    );
+                    h.insert(
+                        reqwest::header::HeaderName::from_static("sec-fetch-mode"),
+                        HeaderValue::from_static("no-cors"),
+                    );
+                    h.insert(
+                        reqwest::header::HeaderName::from_static("sec-fetch-site"),
+                        HeaderValue::from_static("cross-site"),
+                    );
+                    h
+                })
                 .build()
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
 

@@ -316,8 +316,8 @@ async fn logo(Query(q): Query<LogoQuery>, State(st): State<ServerState>) -> impl
 
 /// Resolves the play URL for a channel: HLS goes through the same-origin
 /// proxy; live non-HLS gets probed (HLS-at-.ts panels skip the remuxer,
-/// real TS redirects to ffmpeg); VOD files with browser-native extensions
-/// are byte-proxied without a probe so the native `<video>` can seek.
+/// real TS redirects to ffmpeg); VOD/series native files play directly,
+/// non-native files (mkv/…) are remuxed to HLS.
 async fn play(Path(id): Path<u64>, State(st): State<ServerState>) -> impl IntoResponse {
     let channel = match st.db.get_channel(id as i64) {
         Ok(Some(channel)) => channel,
@@ -394,10 +394,13 @@ fn play_info_for(kind: &str, url: &str, id: u64) -> serde_json::Value {
         make("hls", format!("/proxy/hls/{id}?u={escaped}"))
     } else if kind == "vod" || kind == "episode" {
         if is_browser_native(url) {
-            // Byte-proxy (no probe): native <video> with Range → seekable.
+            // Browser-native files (mp4/webm/mov/…) play straight from the
+            // panel — the player uses `direct`; `url` stays the byte-proxy
+            // path as a fallback.
             make("file", format!("/proxy/hls/{id}?u={escaped}"))
         } else {
-            // mkv/ts/avi etc. → ffmpeg remux (limited seeking, v1).
+            // mkv/ts/avi etc. → ffmpeg remux to HLS (the remuxer drops
+            // subtitle tracks, so these survive).
             make("ts", format!("/proxy/hls/{id}?u={escaped}&probe=1"))
         }
     } else {
@@ -407,8 +410,8 @@ fn play_info_for(kind: &str, url: &str, id: u64) -> serde_json::Value {
     }
 }
 
-/// Extensions browsers can play natively (through the Range-aware byte
-/// proxy). Anything else needs the ffmpeg remuxer.
+/// Extensions browsers can play natively. Anything else needs the ffmpeg
+/// remuxer.
 fn is_browser_native(url: &str) -> bool {
     let path = url::Url::parse(url)
         .map(|u| u.path().to_string())
