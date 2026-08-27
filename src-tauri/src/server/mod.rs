@@ -31,7 +31,8 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::{Channel, Db, Group};
+use crate::db::{Channel, Db, Episode, Group};
+use crate::xtream::{fetch_series_episodes, XtreamConfig};
 
 /// Set once, the first time the server binds, and never changed afterwards.
 pub static PORT: OnceLock<u16> = OnceLock::new();
@@ -64,6 +65,10 @@ pub struct ServerInfo {
 pub struct ServerState {
     pub db: Arc<Db>,
     pub http: reqwest::Client,
+    /// Streaming client (no total-request timeout) for long media proxy
+    /// requests (native VOD files, HLS segments/logos), so a long movie is
+    /// never truncated by the 60s cap on `http`.
+    pub stream_http: reqwest::Client,
     pub sessions: Arc<ffmpeg::SessionStore>,
     /// Channel ids whose probe=1 request found a non-HLS (binary) stream.
     /// The probe opens a real upstream connection and abandons it mid-body,
@@ -177,6 +182,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/logo", get(logo))
         .route("/api/play/{id}", get(play))
         .route("/api/play/episode/{id}", get(play_episode))
+        .route("/api/series/{id}/episodes", get(series_episodes))
         .route("/api/epg", get(epg))
         .route("/proxy/hls/{id}", get(hls_proxy::handle_hls))
         .route("/stream/ts/{id}/index.m3u8", get(ffmpeg::handle_manifest))
@@ -296,7 +302,7 @@ async fn logo(Query(q): Query<LogoQuery>, State(st): State<ServerState>) -> impl
     // Many provider CDNs hotlink-protect logos: send the logo's own origin
     // as Referer so they treat us as a first-party page, not a leech.
     let referer = url.origin().ascii_serialization();
-    match proxy_stream(&st.http, url.as_str(), None, &[("referer", referer)]).await {
+    match proxy_stream(&st.stream_http, url.as_str(), None, &[("referer", referer)]).await {
         Ok((status, mut headers, body)) => {
             // Logos are static; let WebViews reuse them across list
             // renders instead of re-fetching through the proxy.
@@ -370,6 +376,130 @@ async fn play_episode(Path(id): Path<u64>, State(st): State<ServerState>) -> imp
         }
     };
     Json(play_info_for("episode", &ep.url, id + EPISODE_ID_OFFSET)).into_response()
+}
+
+/// Lists the episodes of a series channel (TV-page series browser). Serves
+/// the cached rows when present; otherwise it lazily fetches them from the
+/// Xtream panel (same flow as the `series_episodes` command) and caches them
+/// with their real ids so `/api/play/episode/{id}` resolves.
+async fn series_episodes(
+    Path(id): Path<u64>,
+    State(st): State<ServerState>,
+) -> Result<Json<Vec<Episode>>, (StatusCode, Json<serde_json::Value>)> {
+    let id = id as i64;
+
+    // Channel lookup on the blocking pool (matches how commands do DB work).
+    let channel = crate::commands::run_db(Arc::clone(&st.db), move |d| d.get_channel(id))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "series not found"})),
+            )
+        })?;
+    if channel.kind != "series" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "not a series channel"})),
+        ));
+    }
+
+    // Cached episodes (if any) are served directly.
+    let cached = crate::commands::run_db(Arc::clone(&st.db), move |d| {
+        d.episodes_for_channel(id)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        )
+    })?;
+    if let Some(eps) = cached {
+        return Ok(Json(eps));
+    }
+
+    // Not cached: fetch from the Xtream panel, then store the real rows.
+    let playlist_id = channel.playlist_id;
+    let remote_id = channel.remote_id.clone();
+    let creds = crate::commands::run_db(Arc::clone(&st.db), move |d| {
+        d.playlist_xtream_creds(playlist_id)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "not an Xtream source"})),
+        )
+    })?;
+    let series_id = remote_id
+        .as_deref()
+        .and_then(|r| r.parse::<i64>().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "series id missing"})),
+            )
+        })?;
+    let cfg = XtreamConfig {
+        base: creds.0,
+        username: creds.1,
+        password: creds.2,
+    };
+    let raw = fetch_series_episodes(&cfg, &st.http, series_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": e})),
+            )
+        })?;
+    let eps: Vec<Episode> = raw
+        .into_iter()
+        .map(|e| Episode {
+            id: 0,
+            channel_id: id,
+            season: e.season,
+            episode_num: e.episode_num,
+            title: e.title,
+            url: e.url,
+            logo_url: e.logo_url,
+        })
+        .collect();
+
+    // Never cache an empty result (a panel hiccup would turn into a
+    // permanent "No episodes.").
+    if !eps.is_empty() {
+        let for_db = eps.clone();
+        let _ = crate::commands::run_db(Arc::clone(&st.db), move |d| {
+            d.replace_episodes(id, &for_db)
+        })
+        .await;
+    }
+    let rows = crate::commands::run_db(Arc::clone(&st.db), move |d| {
+        d.episodes_for_channel(id)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        )
+    })?
+    .unwrap_or(eps);
+    Ok(Json(rows))
 }
 
 /// Builds the same-origin play payload for a stream. `kind` is the stored

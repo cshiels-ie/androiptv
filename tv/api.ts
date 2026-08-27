@@ -5,6 +5,10 @@ export interface Channel {
   name: string; url: string; logo_url: string | null;
   tvg_id: string | null; tvg_chno: number | null; kind: string;
 }
+export interface Episode {
+  id: number; channel_id: number; season: number;
+  episode_num: number; title: string; url: string; logo_url: string | null;
+}
 export interface PlayInfo { kind: "hls" | "ts"; url: string; error?: string }
 
 async function get<T>(path: string): Promise<T> {
@@ -13,13 +17,19 @@ async function get<T>(path: string): Promise<T> {
   return res.json();
 }
 
+export type Kind = "live" | "vod" | "series";
+
 export const api = {
-  groups: () => get<Group[]>("/api/groups"),
-  channels: (groupId: number | null, query = "") => {
+  groups: (kind: Kind) => get<Group[]>(`/api/groups?kind=${kind}`),
+  channels: (groupId: number | null, query = "", kind: Kind = "live") => {
     const p = new URLSearchParams();
+    p.set("kind", kind);
     if (groupId != null) p.set("group", String(groupId));
     if (query) p.set("q", query);
     return get<Channel[]>(`/api/channels?${p}`);
   },
+  seriesEpisodes: (channelId: number) =>
+    get<Episode[]>(`/api/series/${channelId}/episodes`),
   play: (channelId: number) => get<PlayInfo>(`/api/play/${channelId}`),
+  playEpisode: (episodeId: number) => get<PlayInfo>(`/api/play/episode/${episodeId}`),
 };

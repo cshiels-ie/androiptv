@@ -9,6 +9,7 @@ export default function Player({
   autoplay = true,
   kind = "hls",
   casting = false,
+  fallbackSrc,
 }: {
   src: string;
   autoplay?: boolean;
@@ -16,6 +17,10 @@ export default function Player({
   // True while the stream is being cast to a Chromecast: the phone's own
   // speakers shouldn't also play.
   casting?: boolean;
+  // If the primary (proxied) src fails to play, fall back to this raw
+  // upstream URL (used for native VOD files whose direct URL bypasses the
+  // proxy — kept as a last resort when the proxy path fails).
+  fallbackSrc?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -28,7 +33,17 @@ export default function Player({
 
     if (kind === "file") {
       // Native playback for VOD/series files — no hls.js, no live retry.
+      // Try the (proxied) src first; on error fall back to the direct URL.
       video.src = src;
+      video.onerror = () => {
+        if (fallbackSrc && video.src !== fallbackSrc) {
+          setError(null);
+          video.src = fallbackSrc;
+          video.play().catch(() => {});
+        } else {
+          setError("Playback error — the file may be offline or unsupported.");
+        }
+      };
     } else {
       const native = video.canPlayType("application/vnd.apple.mpegurl");
       if (native && !Hls.isSupported()) {
@@ -64,11 +79,12 @@ export default function Player({
     return () => {
       hlsRef.current?.destroy();
       hlsRef.current = null;
+      video.onerror = null;
       video.pause();
       video.removeAttribute("src");
       video.load();
     };
-  }, [src, autoplay, kind]);
+  }, [src, autoplay, kind, fallbackSrc]);
 
   useEffect(() => {
     if (casting) videoRef.current?.pause();
@@ -82,9 +98,6 @@ export default function Player({
         controls
         autoPlay={autoplay}
         playsInline
-        onError={() =>
-          setError("Playback error — the file may be offline or unsupported.")
-        }
       />
       {error && <p className="err">{error}</p>}
     </div>

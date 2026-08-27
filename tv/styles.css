@@ -30,6 +30,10 @@ body {
 #hdr h1 { font-size: 1.4rem; }
 #hdr-actions { display: flex; gap: 0.7rem; }
 
+.tabs { display: flex; gap: 0.4rem; margin-left: 1.4rem; }
+.tabs .tab { padding: 0.4rem 0.9rem; font-size: 0.95rem; background: transparent; border-color: transparent; color: var(--muted); }
+.tabs .tab.active { background: var(--accent); border-color: var(--accent); color: var(--fg); }
+
 button {
   background: var(--panel2); color: var(--fg); border: 2px solid var(--border);
   border-radius: 0.5rem; padding: 0.55rem 1.1rem; font-size: 1rem; cursor: pointer;

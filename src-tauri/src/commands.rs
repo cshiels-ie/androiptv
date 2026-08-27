@@ -15,7 +15,7 @@ use crate::AppData;
 
 /// Run `f` on the blocking pool with a cloned `Arc<Db>` and flatten the
 /// error types into a `String`.
-async fn run_db<T: Send + 'static>(
+pub(crate) async fn run_db<T: Send + 'static>(
     db: Arc<Db>,
     f: impl FnOnce(&Db) -> rusqlite::Result<T> + Send + 'static,
 ) -> Result<T, String> {

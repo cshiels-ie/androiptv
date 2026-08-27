@@ -30,6 +30,10 @@ use crate::db::Db;
 pub struct AppData {
     pub db: Arc<Db>,
     pub http: reqwest::Client,
+    /// Streaming client with no total-request timeout, used to proxy long
+    /// media (native VOD files, HLS segments) end-to-end without the 60s
+    /// cap truncating a long movie.
+    pub stream_http: reqwest::Client,
 }
 
 fn app_data_dir(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -61,48 +65,19 @@ pub fn run() {
             let db = Arc::new(Db::open(&data_dir.join("androiptv.db"))?);
 
             // Browser-ish UA: provider CDNs (logos, playlists) commonly
-            // reject the bare "reqwest/x.y.z" default.
-            let http = reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(60))
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                     (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-                )
-                // Look like a real browser to anti-leech panels: some serve
-                // streams fine to a browser but reject requests that lack the
-                // Accept-Language / Sec-Fetch-* headers a browser media
-                // request carries (the panel then answers 403/5xx and the
-                // proxy surfaces it as 502, while "direct URL" in a browser
-                // works). These are harmless to panels that don't check.
-                .default_headers({
-                    use reqwest::header::{HeaderMap, HeaderValue};
-                    let mut h = HeaderMap::new();
-                    h.insert(reqwest::header::ACCEPT, HeaderValue::from_static("*/*"));
-                    h.insert(
-                        reqwest::header::ACCEPT_LANGUAGE,
-                        HeaderValue::from_static("en-US,en;q=0.9"),
-                    );
-                    h.insert(
-                        reqwest::header::HeaderName::from_static("sec-fetch-dest"),
-                        HeaderValue::from_static("video"),
-                    );
-                    h.insert(
-                        reqwest::header::HeaderName::from_static("sec-fetch-mode"),
-                        HeaderValue::from_static("no-cors"),
-                    );
-                    h.insert(
-                        reqwest::header::HeaderName::from_static("sec-fetch-site"),
-                        HeaderValue::from_static("cross-site"),
-                    );
-                    h
-                })
-                .build()
-                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            // reject the bare "reqwest/x.y.z" default. The browser-media
+            // default headers make anti-leech panels treat us as a first
+            // -party media request (see build_client).
+            let http = build_client(Duration::from_secs(60))?;
+            // Long media streams (native VOD files through the byte proxy)
+            // must never be truncated by a total-request timeout, so they
+            // use a dedicated client with only a connect/read timeout.
+            let stream_http = build_client(Duration::from_secs(0))?;
 
             app.manage(AppData {
                 db: db.clone(),
                 http: http.clone(),
+                stream_http: stream_http.clone(),
             });
 
             // Embedded LAN TV server + ffmpeg session sweeper. A saved
@@ -116,7 +91,12 @@ pub fn run() {
             let state = server::ServerState {
                 db,
                 http,
-                sessions: Arc::new(server::ffmpeg::SessionStore::new()),
+                stream_http: stream_http.clone(),
+                // Writable dir for staging a runnable copy of the Android
+                // ffmpeg sidecar (the extracted native-lib path is noexec).
+                sessions: Arc::new(server::ffmpeg::SessionStore::new(
+                    data_dir.join("ffmpeg"),
+                )),
                 probe_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             };
             server::spawn_server_ticker(state.clone());
@@ -128,4 +108,52 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Builds a reqwest client with a browser-like identity, so provider CDNs
+/// (logos, playlists, streams) treat the proxy as a real first-party media
+/// request instead of rejecting a bare `reqwest/x.y.z` UA.
+///
+/// `total_timeout` is the whole-request deadline (0 disables it — the
+/// streaming client must never cap a long movie mid-file; it keeps a 10s
+/// connect timeout and a 30s per-read idle timeout so a stalled upstream
+/// still fails rather than hanging forever).
+fn build_client(total_timeout: Duration) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        );
+    if !total_timeout.is_zero() {
+        builder = builder.timeout(total_timeout);
+    }
+    // Look like a real browser to anti-leech panels: some serve streams fine
+    // to a browser but reject requests that lack the Accept-Language /
+    // Sec-Fetch-* headers a browser media request carries (the panel then
+    // answers 403/5xx). These are harmless to panels that don't check.
+    builder = builder.default_headers({
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        h.insert(reqwest::header::ACCEPT, HeaderValue::from_static("*/*"));
+        h.insert(
+            reqwest::header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        h.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-dest"),
+            HeaderValue::from_static("video"),
+        );
+        h.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-mode"),
+            HeaderValue::from_static("no-cors"),
+        );
+        h.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("cross-site"),
+        );
+        h
+    });
+    Ok(builder.build()?)
 }

@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -49,14 +49,19 @@ pub struct SessionStore {
     errors: Arc<Mutex<HashMap<u64, VecDeque<String>>>>,
     /// Set when spawn failed, so manifest requests get a good message.
     spawn_errors: Mutex<HashMap<u64, String>>,
+    /// A writable directory we can stage a copy of the Android ffmpeg
+    /// sidecar into (Android's extracted `lib/` path can't be executed in
+    /// place). On desktop this is unused for staging but kept harmless.
+    staging_dir: PathBuf,
 }
 
 impl SessionStore {
-    pub fn new() -> Self {
+    pub fn new(staging_dir: PathBuf) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
             errors: Arc::new(Mutex::new(HashMap::new())),
             spawn_errors: Mutex::new(HashMap::new()),
+            staging_dir,
         }
     }
 
@@ -158,7 +163,7 @@ impl SessionStore {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("cannot create session dir {}: {e}", dir.display()))?;
 
-        let bin = match ffmpeg_bin() {
+        let bin = match ffmpeg_bin(&self.staging_dir) {
             Some(bin) => bin,
             None => {
                 let msg =
@@ -329,52 +334,39 @@ fn manifest_has_endlist(dir: &PathBuf) -> bool {
     }
 }
 
-/// Resolves the ffmpeg binary: `ANDROIPTV_FFMPEG` env var, then the Tauri
-/// sidecar next to the main executable (where `bundle.externalBin` drops
-/// it), then plain `ffmpeg` on PATH.
+/// Resolves a runnable ffmpeg binary, in order: the `ANDROIPTV_FFMPEG` env
+/// var, the Tauri sidecar next to the main executable (staged into
+/// `staging_dir` on Android so it can actually run), then plain `ffmpeg` on
+/// PATH.
 ///
 /// Tauri names external binaries by target triple: `ffmpeg-<triple>` on
 /// desktop, `libffmpeg-<triple>.so` on Android (the `lib` prefix and `.so`
 /// suffix let the APK package a plain executable as a native library; the
 /// installer extracts it beside the app's own libs, which is what
-/// `current_exe()` points at). Both candidates are tried before the bare
-/// `ffmpeg` fallback.
-fn ffmpeg_bin() -> Option<PathBuf> {
+/// `current_exe()` points at).
+///
+/// Android detail: the extracted native-lib path isn't freely executable in
+/// place (W^X / noexec on the APK-extracted `lib/` dir), so the sidecar is
+/// copied into our writable app dir and chmod +x'd, then run from there.
+/// The staged path is cached so the copy happens once per process.
+fn ffmpeg_bin(staging_dir: &PathBuf) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("ANDROIPTV_FFMPEG") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
             return Some(candidate);
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            // The target triple (emitted by build.rs) matches the
-            // externalBin name for the running build, on every ABI.
-            let triple = env!("ANDROIPTV_TARGET");
-            for name in [
-                format!("ffmpeg-{triple}"),
-                format!("libffmpeg-{triple}.so"),
-                "ffmpeg".to_string(),
-            ] {
-                // `mut` is only used on Windows (set_extension); silence
-                // the unused_mut warning on other platforms.
-                #[cfg_attr(not(windows), allow(unused_mut))]
-                let mut candidate = parent.join(&name);
-                #[cfg(windows)]
-                {
-                    candidate.set_extension("exe");
-                }
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
+
+    if let Some(staged) = staged_sidecar(staging_dir) {
+        return Some(staged);
     }
+
+    // Plain `ffmpeg` / PATH fallback (`is_file` on a bare name can't see
+    // PATH).
     let plain = PathBuf::from("ffmpeg");
     if plain.is_file() {
         return Some(plain);
     }
-    // PATH search (`is_file` on a bare name can't see PATH).
     if let Ok(path) = std::env::var("PATH") {
         #[cfg(windows)]
         let name = "ffmpeg.exe";
@@ -388,6 +380,69 @@ fn ffmpeg_bin() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Finds the Tauri ffmpeg sidecar beside the current executable and returns
+/// a runnable path to it. On desktop this is the sidecar itself (already
+/// executable in place); on Android it is a staged copy in `staging_dir`.
+/// The result is cached in a per-process [`OnceLock`] so the Android copy
+/// runs at most once.
+fn staged_sidecar(staging_dir: &PathBuf) -> Option<PathBuf> {
+    #[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+    let staging_dir = staging_dir;
+    static STAGED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    STAGED
+        .get_or_init(|| match locate_sidecar() {
+            #[cfg(target_os = "android")]
+            Some(src) => stage_android_sidecar(&src, staging_dir),
+            #[cfg(not(target_os = "android"))]
+            found => found,
+        })
+        .clone()
+}
+
+/// Looks for the externalBin sidecar next to the current executable, trying
+/// the desktop and Android (native-lib) names for the build's target triple.
+fn locate_sidecar() -> Option<PathBuf> {
+    let parent = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    // The target triple (emitted by build.rs) matches the externalBin name
+    // for the running build, on every ABI.
+    let triple = env!("ANDROIPTV_TARGET");
+    for name in [
+        format!("ffmpeg-{triple}"),
+        format!("libffmpeg-{triple}.so"),
+        "ffmpeg".to_string(),
+    ] {
+        // `mut` is only used on Windows (set_extension); silence the
+        // unused_mut warning on other platforms.
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut candidate = parent.join(&name);
+        #[cfg(windows)]
+        {
+            candidate.set_extension("exe");
+        }
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Copies the Android sidecar into a writable, executable location and
+/// chmods it so `Command::new` can actually run it.
+#[cfg(target_os = "android")]
+fn stage_android_sidecar(src: &PathBuf, staging_dir: &PathBuf) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(_) = std::fs::create_dir_all(staging_dir) else {
+        return None;
+    };
+    let file_name = src.file_name()?;
+    let dest = staging_dir.join(file_name);
+    // Overwrite so a stale/corrupt copy is replaced.
+    std::fs::copy(src, &dest).ok()?;
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).ok()?;
+    Some(dest)
 }
 
 /// Session working directory, derived from the channel id so it can be

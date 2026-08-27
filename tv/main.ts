@@ -1,10 +1,14 @@
 // TV browser entry point (vanilla TS, no framework). Hash router:
-//   #/channels            — group nav + channel grid
-//   #/play/<channelId>    — video player
+//   #/channels            — Live: group nav + channel grid
+//   #/movies              — Movies (VOD): group nav + grid
+//   #/series              — TV Shows: series grid
+//   #/series/<id>         — episodes of one series
+//   #/play/<channelId>    — play a live/VOD channel
+//   #/play/episode/<id>   — play one episode
 // D-pad / arrow-key navigation with focus management.
 import "./styles.css";
 import { api } from "./api";
-import type { Channel } from "./api";
+import type { Channel, Episode, Kind } from "./api";
 import { attachPlayer } from "./player";
 
 const hdr = document.getElementById("hdr")!;
@@ -17,6 +21,10 @@ let channels: Channel[] = [];
 let activeGroup: number | null = null;
 let selectedId = 0;
 let cleanup: (() => void) | null = null;
+
+// Current tab. The trailing "#/channels" is just so location.hash always
+// has a route to route() on.
+let tab: Kind = "live";
 
 // ---------- small DOM helpers ----------
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -52,7 +60,7 @@ function focusIndex(i: number) {
 // a logo (or whose logo fetch fails) get the <img> hidden entirely — a
 // hidden-but-laid-out image leaves a gaping hole, and a broken one shows
 // the browser's broken-image glyph.
-function buildCard(ch: Channel): HTMLButtonElement {
+function buildCard(ch: Channel, onOpen: () => void): HTMLButtonElement {
   const card = el("button", "card");
   const img = el("img");
   if (ch.logo_url) {
@@ -65,7 +73,25 @@ function buildCard(ch: Channel): HTMLButtonElement {
   text.appendChild(el("span", "name", ch.name));
   if (ch.tvg_chno != null) text.appendChild(el("span", "chno", `CH ${ch.tvg_chno}`));
   card.append(img, text);
-  card.onclick = () => (location.hash = `#/play/${ch.id}`);
+  card.onclick = onOpen;
+  return card;
+}
+
+function episodeCard(ep: Episode): HTMLButtonElement {
+  const card = el("button", "card");
+  const img = el("img");
+  if (ep.logo_url) {
+    img.src = `/api/logo?u=${encodeURIComponent(ep.logo_url)}`;
+    img.onerror = () => { img.style.display = "none"; };
+  } else {
+    img.style.display = "none";
+  }
+  const text = el("span");
+  text.appendChild(
+    el("span", "name", `S${ep.season}E${ep.episode_num} · ${ep.title || `Episode ${ep.episode_num}`}`),
+  );
+  card.append(img, text);
+  card.onclick = () => (location.hash = `#/play/episode/${ep.id}`);
   return card;
 }
 
@@ -74,21 +100,57 @@ async function route() {
   cleanup?.();
   cleanup = null;
   const hash = location.hash || "#/channels";
-  const m = hash.match(/^#\/play\/(\d+)/);
-  if (m) return renderPlayer(Number(m[1]));
-  await renderChannels();
+  let m = hash.match(/^#\/play\/episode\/(\d+)/);
+  if (m) {
+    const episodeId = Number(m[1]);
+    return renderPlayer(() => api.playEpisode(episodeId));
+  }
+  m = hash.match(/^#\/play\/(\d+)/);
+  if (m) {
+    const channelId = Number(m[1]);
+    return renderPlayer(() => api.play(channelId));
+  }
+  m = hash.match(/^#\/series\/(\d+)/);
+  if (m) return renderEpisodes(Number(m[1]));
+  if (/^#\/series/.test(hash)) return renderSeriesList();
+  if (/^#\/movies/.test(hash)) return renderChannels("vod");
+  return renderChannels("live");
 }
 
-// ---------- channels ----------
-async function renderChannels() {
-  hdr.querySelector("h1")!.textContent = "AndroIPTV — Channels";
+// ---------- header tabs ----------
+function renderTabs(current: Kind) {
+  const tabs: Array<[Kind, string, string]> = [
+    ["live", "Live", "#/channels"],
+    ["vod", "Movies", "#/movies"],
+    ["series", "TV Shows", "#/series"],
+  ];
+  const nav = el("nav", "tabs");
+  nav.id = "tabs";
+  for (const [kind, label, href] of tabs) {
+    const b = el("button", kind === current ? "tab active" : "tab", label);
+    b.onclick = () => { location.hash = href; };
+    nav.appendChild(b);
+  }
+  const existing = document.getElementById("tabs");
+  if (existing) {
+    existing.replaceWith(nav);
+  } else {
+    // Insert between the title and the actions row.
+    hdr.insertBefore(nav, actions);
+  }
+}
+
+// ---------- channels (live / movies) ----------
+async function renderChannels(kind: Kind) {
+  tab = kind;
+  renderTabs(kind);
   actions.replaceChildren();
   const back = el("button", "link", "Refresh");
-  back.onclick = () => loadChannels(true);
+  back.onclick = () => loadChannels(true, kind);
   actions.appendChild(back);
 
   try {
-    [groups, channels] = await Promise.all([api.groups(), api.channels(activeGroup)]);
+    [groups, channels] = await Promise.all([api.groups(kind), api.channels(activeGroup, "", kind)]);
   } catch (e) {
     main.replaceChildren();
     main.appendChild(el("p", "muted", "Server unreachable — is the host app running?"));
@@ -96,51 +158,145 @@ async function renderChannels() {
     return;
   }
 
-  ftr.textContent = `${channels.length} channels · ${groups.length} groups · running on this device's local network`;
+  ftr.textContent = `${channels.length} ${kind === "live" ? "channels" : kind === "vod" ? "movies" : "shows"} · ${groups.length} groups · running on this device's local network`;
 
   const gbar = el("div", "groups");
   const allBtn = el("button", activeGroup === null ? "active" : "", "All");
-  allBtn.onclick = () => { activeGroup = null; loadChannels(true); };
+  allBtn.onclick = () => { activeGroup = null; loadChannels(true, kind); };
   gbar.appendChild(allBtn);
   for (const g of groups) {
     const b = el("button", g.id === activeGroup ? "active" : "", g.name);
-    b.onclick = () => { activeGroup = g.id; loadChannels(true); };
+    b.onclick = () => { activeGroup = g.id; loadChannels(true, kind); };
     gbar.appendChild(b);
   }
 
   const grid = el("div", "grid");
-  for (const ch of channels) grid.appendChild(buildCard(ch));
+  for (const ch of channels) {
+    grid.appendChild(buildCard(ch, () => (location.hash = `#/play/${ch.id}`)));
+  }
 
   main.replaceChildren(gbar, grid);
   focusIndex(0);
 }
 
-async function loadChannels(restoreFocus: boolean) {
+async function loadChannels(restoreFocus: boolean, kind: Kind) {
   try {
-    channels = await api.channels(activeGroup);
-    ftr.textContent = `${channels.length} channels`;
+    channels = await api.channels(activeGroup, "", kind);
+    ftr.textContent = `${channels.length} ${kind === "vod" ? "movies" : "channels"}`;
   } catch (e) {
     toast(String(e));
     return;
   }
   const grid = main.querySelector(".grid")!;
   grid.replaceChildren();
-  for (const ch of channels) grid.appendChild(buildCard(ch));
+  for (const ch of channels) {
+    grid.appendChild(buildCard(ch, () => (location.hash = `#/play/${ch.id}`)));
+  }
   if (restoreFocus) focusIndex(0);
 }
 
+// ---------- series ----------
+async function renderSeriesList() {
+  tab = "series";
+  renderTabs("series");
+  actions.replaceChildren();
+
+  let groups: Awaited<ReturnType<typeof api.groups>>;
+  let all: Channel[];
+  try {
+    [groups, all] = await Promise.all([
+      api.groups("series"),
+      api.channels(null, "", "series"),
+    ]);
+  } catch (e) {
+    main.replaceChildren();
+    main.appendChild(el("p", "muted", "Server unreachable — is the host app running?"));
+    ftr.textContent = String(e);
+    return;
+  }
+  ftr.textContent = `${all.length} shows · running on this device's local network`;
+
+  const gbar = el("div", "groups");
+  const allBtn = el("button", activeGroup === null ? "active" : "", "All");
+  allBtn.onclick = () => { activeGroup = null; loadSeries(true); };
+  gbar.appendChild(allBtn);
+  for (const g of groups) {
+    const b = el("button", g.id === activeGroup ? "active" : "", g.name);
+    b.onclick = () => { activeGroup = g.id; loadSeries(true); };
+    gbar.appendChild(b);
+  }
+
+  const grid = el("div", "grid");
+  for (const ch of all) {
+    grid.appendChild(buildCard(ch, () => (location.hash = `#/series/${ch.id}`)));
+  }
+
+  main.replaceChildren(gbar, grid);
+  focusIndex(0);
+}
+
+async function loadSeries(restoreFocus: boolean) {
+  try {
+    channels = await api.channels(activeGroup, "", "series");
+    ftr.textContent = `${channels.length} shows`;
+  } catch (e) {
+    toast(String(e));
+    return;
+  }
+  const grid = main.querySelector(".grid")!;
+  grid.replaceChildren();
+  for (const ch of channels) {
+    grid.appendChild(buildCard(ch, () => (location.hash = `#/series/${ch.id}`)));
+  }
+  if (restoreFocus) focusIndex(0);
+}
+
+async function renderEpisodes(channelId: number) {
+  tab = "series";
+  renderTabs("series");
+  actions.replaceChildren();
+  const back = el("button", "", "◀ Shows");
+  back.onclick = () => (location.hash = "#/series");
+  actions.appendChild(back);
+
+  let eps: Episode[];
+  try {
+    eps = await api.seriesEpisodes(channelId);
+  } catch (e) {
+    main.replaceChildren(el("p", "muted", "Couldn't load episodes."));
+    ftr.textContent = String(e);
+    return;
+  }
+
+  ftr.textContent = `${eps.length} episodes`;
+  if (!eps.length) {
+    main.replaceChildren(el("p", "muted", "No episodes for this show yet."));
+    return;
+  }
+
+  const grid = el("div", "grid");
+  for (const ep of eps) grid.appendChild(episodeCard(ep));
+  main.replaceChildren(grid);
+  focusIndex(0);
+}
+
 // ---------- player ----------
-async function renderPlayer(channelId: number) {
+async function renderPlayer(getInfo: () => Promise<Awaited<ReturnType<typeof api.play>>>) {
+  renderTabs(tab);
   actions.replaceChildren();
   const back = el("button", "", "◀ Back");
-  back.onclick = () => (location.hash = "#/channels");
+  back.onclick = () => {
+    if (tab === "series") location.hash = "#/series";
+    else if (tab === "vod") location.hash = "#/movies";
+    else location.hash = "#/channels";
+  };
   actions.appendChild(back);
 
   let info: Awaited<ReturnType<typeof api.play>>;
   try {
-    info = await api.play(channelId);
+    info = await getInfo();
   } catch (e) {
-    main.replaceChildren(el("p", "muted", `Channel ${channelId} not found.`));
+    main.replaceChildren(el("p", "muted", `Couldn't start: ${String(e)}`));
     return;
   }
 
@@ -148,7 +304,7 @@ async function renderPlayer(channelId: number) {
   wrap.id = "player-wrap";
   const now = el("div");
   now.id = "now-info";
-  const name = el("span", "name", info.error ? "Playback unavailable" : `▶ ${info.url ? "Loading…" : ""}`);
+  const name = el("span", "name", info && info.url ? "Loading…" : "Playback unavailable");
   now.appendChild(name);
   const video = el("video");
   video.autoplay = true;
@@ -157,9 +313,9 @@ async function renderPlayer(channelId: number) {
   wrap.append(now, video);
   main.replaceChildren(wrap);
 
-  if (info.error) {
-    name.textContent = info.error;
-    toast(info.error);
+  if (!info || info.error || !info.url) {
+    name.textContent = info?.error || "Playback unavailable";
+    if (info?.error) toast(info.error);
     return;
   }
 
@@ -170,7 +326,7 @@ async function renderPlayer(channelId: number) {
     name.textContent = msg;
     toast(msg);
   });
-  video.addEventListener("playing", () => (name.textContent = "▶ LIVE"));
+  video.addEventListener("playing", () => (name.textContent = "▶ Playing"));
 }
 
 // ---------- keyboard / remote (D-pad) ----------
@@ -186,7 +342,11 @@ document.addEventListener("keydown", (e) => {
     case "ArrowDown": case "Down": e.preventDefault(); focusIndex(selectedId + cols); break;
     case "ArrowUp": case "Up": e.preventDefault(); focusIndex(selectedId - cols); break;
     case "Backspace": case "Escape": {
-      if (location.hash.startsWith("#/play/")) location.hash = "#/channels";
+      if (location.hash.startsWith("#/play/")) {
+        location.hash = tab === "series" ? "#/series" : tab === "vod" ? "#/movies" : "#/channels";
+      } else if (location.hash.startsWith("#/series/")) {
+        location.hash = "#/series";
+      }
       break;
     }
   }

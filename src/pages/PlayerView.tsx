@@ -131,14 +131,16 @@ export default function PlayerView({
     }
     setCastError(null);
     setCast({ state: "connecting" });
+    // Files play through the proxy (same as on-device playback) so the
+    // panel's Referer/browser headers are honoured; a long movie is safe
+    // because the streaming client has no total-request timeout.
+    const castUrl = proxySrc;
     try {
       await invoke("plugin:cast|connect");
       await invoke("plugin:cast|load", {
-        // Files cast straight from the panel (same as playback) so a long
-        // movie isn't cut short by the proxy's request timeout.
-        url: playInfo.kind === "file" ? (playInfo.direct ?? proxySrc) : proxySrc,
+        url: castUrl,
         title: channel.name,
-        contentType: mimeFor(proxySrc),
+        contentType: mimeFor(castUrl),
         streamType: playInfo.kind === "file" ? "buffered" : "live",
       });
     } catch (e) {
@@ -149,13 +151,14 @@ export default function PlayerView({
 
   const proxySrc = playInfo ? `${serverInfo!.url}${playInfo.url}` : null;
 
-  // Single automatic path: native files play the panel URL directly; HLS and
-  // ffmpeg-remuxed streams play through the same-origin proxy with hls.js.
-  let effective: { kind: "hls" | "file"; src: string } | null = null;
+  // Single automatic path: native files play through the same-origin proxy
+  // with the raw panel URL (`direct`) kept only as a fallback; HLS and
+  // ffmpeg-remuxed streams always play through the proxy with hls.js.
+  let effective: { kind: "hls" | "file"; src: string; fallbackSrc?: string } | null = null;
   if (playInfo && proxySrc) {
     effective =
       playInfo.kind === "file"
-        ? { kind: "file", src: playInfo.direct ?? proxySrc }
+        ? { kind: "file", src: proxySrc, fallbackSrc: playInfo.direct ?? undefined }
         : { kind: "hls", src: proxySrc };
   }
 
@@ -195,6 +198,7 @@ export default function PlayerView({
             key={effective.src}
             src={effective.src}
             kind={effective.kind}
+            fallbackSrc={effective.fallbackSrc}
             casting={cast?.state === "connected"}
           />
         )}
