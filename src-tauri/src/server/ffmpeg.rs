@@ -392,11 +392,12 @@ fn staged_sidecar(staging_dir: &PathBuf) -> Option<PathBuf> {
     let staging_dir = staging_dir;
     static STAGED: OnceLock<Option<PathBuf>> = OnceLock::new();
     STAGED
-        .get_or_init(|| match locate_sidecar() {
+        .get_or_init(|| {
+            let src = locate_sidecar()?;
             #[cfg(target_os = "android")]
-            Some(src) => stage_android_sidecar(&src, staging_dir),
+            return stage_android_sidecar(&src, staging_dir);
             #[cfg(not(target_os = "android"))]
-            found => found,
+            Some(src)
         })
         .clone()
 }
